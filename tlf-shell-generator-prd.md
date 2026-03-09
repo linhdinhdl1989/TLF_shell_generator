@@ -82,6 +82,76 @@ Core loop: Upload → Parse Once → Extract TLF list → Define structure → P
 | Compliance audit log       | System logs AI suggestions and user edits with timestamps and references to source chunks/sections.                                                                                                                                                      | Exportable CSV log is available showing per-shell history, including variables, footnotes, SAP section references, unconfirmed variables, and user feedback.                                                                | Must     |
 | Cost dashboard             | Internal dashboard (admin view) for tracking token usage and API costs per study and per shell.                                                                                                                                                         | Costs per study and per shell visible; alerts when estimated API cost approaches $1 per study; allows tuning of retrieval and prompt sizes if needed.                                                                      | Must     |
 
+### 3.1.1 MVP TLF List & Content Rules
+
+#### 1. Accepted Uploaded Documents (MVP)
+
+For the MVP, the app supports upload of the following document types:
+
+- **SAP** (mandatory conceptually; may be omitted if user only uploads a TLF shell list).
+- **Protocol** (optional).
+- **TLF shell library** (optional collection of reference shells).
+- **Study‑specific TLF shell list** (optional, but unlocks the fastest path to shells).
+
+Each document is tagged by type on upload.
+
+#### 2. TLF List Behavior
+
+- **If a study-specific TLF shell list is provided:**
+  - The app uses that list as the **source of truth** for TLF numbers, titles, and section types.
+  - AI generates shells **only for the shells in that list**.
+  - No TLF list extraction from SAP is performed.
+
+- **If a study‑specific TLF shell list is not provided:**
+  - The app **first extracts a candidate TLF list from the SAP** (e.g., section 12.x).
+  - The user is presented with a **review screen** for the extracted list:
+    - Can add, remove, or reorder rows.
+    - Can edit numbers, titles, or section types.
+    - Can request AI to adjust the list (e.g., “add a separate table for AEs by SOC”).
+  - User must **approve the final TLF list** before the app proceeds to per‑shell generation.
+
+This ensures the app never generates shells for unknown TLF numbers without user sign‑off.
+
+#### 3. Per‑Shell Content Logic (MVP)
+
+For each shell in the approved TLF list, the app follows these rules:
+
+- **If the SAP explicitly specifies the content of the table/figure (e.g., “Table 14.1.1: Demographics by ARM, with AGE, SEX, RACE…”):**
+  - The app:
+    - Uses the **variables** explicitly named in the SAP as the base variable list.
+    - AI reasoning **infers the variable type** (categorical vs numeric) from:
+      - Variable names.
+      - Context (e.g., “AGE” → numeric; “SEX” → categorical).
+    - AI suggests **summary statistics** appropriate for the inferred type:
+      - Continuous → Mean (SD), Min, Max (or similar).
+      - Categorical → n (%).
+  - The app **does not require** user input of variables at this stage.
+  - User can:
+    - Add or remove variables.
+    - Adjust footnotes or section references.
+    - Request different stats (e.g., add median/IQR).
+  - If user changes the variable list, those changes are treated as **override** and persisted in the shell.
+
+- **If the SAP does not specify the exact variables for the table/figure:**
+  - The app **asks the user to provide** the variables, including:
+    - Variable names.
+    - Optional hierarchy (e.g., for disposition‑like tables: “ARM” → “Enrolled” → “Completed”, etc.).
+    - Optional grouping (e.g., “AE by SOC and PT”).
+  - **If the user provides variables:**
+    - The app uses them as the base variable list.
+    - AI:
+      - Validates inferred type and stats.
+      - May suggest additional standard variables (e.g., “Consider adding total N per row/column?”).
+      - Flags any AI‑suggested variables as "AI‑suggested (unconfirmed)".
+  - **If the user provides no variables at all:**
+    - The app assumes the table is **of a standard type** in the field (e.g., “AE by SOC and PT”, “Disposition”, “Demographics”, etc.).
+    - AI:
+      - Infers the likely variable pattern from the title, section, and SAP/protocol context.
+      - Suggests a **reasonable default table structure** (variables + hierarchy + stats).
+      - Clearly marks all variables as "AI‑suggested (unconfirmed)".
+    - The user must **confirm or adjust** the suggested structure before the shell is finalized.
+
+
 ### 3.2 Phase 2+ (Future)
 
 | Feature              | Description                                                                                           | Dependencies              |
@@ -94,6 +164,35 @@ Core loop: Upload → Parse Once → Extract TLF list → Define structure → P
 ---
 
 ## 4. User Flows & Experience
+
+### 4.0 Study Page Layout (MVP)
+
+Each study has a **tabbed interface** with the following tabs (left‑to‑right, matching screenshot):
+
+1. **📄 Documents**  
+   - List of uploaded documents (SAP, protocol, TLF library, study‑specific TLF list).  
+   - Upload button + type selector (`sap`|`protocol`|`library`|`tlf-list`|`other`).  
+   - Status per document: `uploading` → `processing` → `ready` or `error`.  
+   - Download parsed content or re‑parse option.
+
+2. **📋 TLF**  
+   - **Editable TLF list table** (number, title, section, status).  
+   - If no study‑specific list uploaded: AI‑extracted from SAP + **AI chatbox** for feedback (e.g., "add separate AE by SOC table").  
+   - Edit: add/remove/reorder rows, edit cells.  
+   - Approve button to finalize list before shell generation.
+
+3. **🔧 Global Requirements**  
+   - **Shell structure setup** by section type (demographics, safety, efficacy, etc.).  
+   - Per section: number pattern (e.g., 14.x), title/subtitle templates, column headers (arms + total?).  
+   - Preview sample table for each section type.  
+   - Save/approve structures.
+
+4. **🧩 All Shells**  
+   - List of generated shells (sidebar like your React prototype).  
+   - Click to open **per‑shell editor** (main area): rendered preview + AI chatbox + table edits.  
+
+**Navigation:** Top bar shows study name + "Save Requirements" button. Breadcrumb: Dashboard → Studies → StudyXYZ.[file:230]
+
 
 ### 4.1 Upload and Parse
 
@@ -183,6 +282,51 @@ For each shell in the TLF list:
 - AI adjusts the shell based on feedback, re-running internal roles if needed.
 - User approves the shell when satisfied.
 - System logs each iteration in the audit log, including sources and feedback.
+
+### 4.4.1 User Feedback Mechanisms
+
+During the TLF list and per‑shell preview steps, users can provide feedback in **two complementary forms**. The app must support both and synchronize them in the audit log.
+
+#### 1. Free‑text feedback to AI
+
+- Users can:
+  - Type natural language messages to the AI (e.g., “Use AGE GROUP instead of continuous AGE”, “Add footnote from SAP 12.3”, “Make this look like Table 2.5 in the library”).
+- The app must:
+  - Attach the text feedback to the current TLF or shell.
+  - Log it in the audit trail with timestamp and user ID.
+- AI processes the text and:
+  - Adjusts footnotes, variables, hierarchy, or statistics.
+  - Re‑renders the preview table if needed.
+  - Explains the change in the next preview (if requested by user).
+
+#### 2. Direct table edits (UI‑driven)
+
+Users can also **directly edit** the preview table grid, which the app must translate into structured changes:
+
+- **Reorder rows:**
+  - Users can drag rows to reorder parameters or variables.
+  - The app updates the row order in the internal JSON shell and reflects it in the UI.
+- **Add or remove rows:**
+  - Users can add new rows (e.g., a new parameter or subgroup).
+  - App:
+    - Infers variable name from cell content if possible.
+    - Marks new rows as **AI‑suggested (unconfirmed)** if not backed by SAP/protocol.
+- **Add or remove columns:**
+  - Users can add a new column (e.g., a “Percent” column) or remove an existing one.
+  - App:
+    - Updates the `headers` array and `preview_table` structure.
+    - Remaps existing data to the new column layout.
+- **Edit cell content:**
+  - Users can edit text in headers or row stubs.
+  - App:
+    - Updates the title, subtitle, or parameter labels accordingly.
+    - Preserves AI‑suggested flags only when the variable is unchanged.
+
+AI must:
+- Respect direct table edits as **user overrides**.
+- Not reverse them in subsequent rounds unless explicitly requested (e.g., via text feedback: “Re‑order back to SAP order”).
+- Log all table edits (e.g., “row added”, “column removed”, “reshuffle rows”) in the audit trail together with any free‑text feedback.
+
 
 ### 4.5 Export
 
@@ -354,6 +498,32 @@ For each shell in the TLF list:
 - Parsing libraries for PDF/Word/Excel.
 - Database and storage with row-level security.
 - Frontend stack for interactive previews (e.g. React).
+
+### 5.1 Backend Assumptions
+
+To support the document‑centric frontend (sidebar TLF list, main shell editor, and AI chat panel) shown in the current prototype, the backend is assumed to:
+
+- Store **document metadata** for SAP, protocol, TLF shell library, and study‑specific TLF lists, with a link to each TLF shell.
+- Persist a **structured TLF list** (number, title, section reference, status) that can be edited by the user and reviewed before shell generation.
+- Maintain a **shell state model** including:
+  - Table type, title, population, and section context.
+  - Columns (labels, widths), hierarchical rows (with indentation and header flags), and footnotes.
+- Capture **user feedback** in both:
+  - **Free‑text messages to AI** (chat history).
+  - **Direct table edits** (add row/column, reorder, delete).
+- Provide an **audit trail API** that logs:
+  - User edits (e.g., “add row”, “delete column”, “update title”).
+  - AI‑generated suggestions and their justification.
+- Support **AI interaction via an API** that:
+  - Accepts user prompts and TLF/shell context.
+  - Returns structured text or metadata that can be parsed into rows/columns/suggestions.
+- Offer **export endpoints** for shell specs (e.g., JSON, Excel) compatible with SAS or R‑based TLF mock‑shell generation scripts.
+
+If any of these backend capabilities are not delivered as planned, the frontend will fall back to **local‑only editing with export**, but without:
+- Multi‑user collaboration.
+- Document‑linked TLF list review.
+- Centralized audit trail.
+
 
 ---
 

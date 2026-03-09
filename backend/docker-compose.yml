@@ -1,0 +1,66 @@
+##############################################################################
+# TLF Shell Generator — Docker Compose
+#
+# Starts:
+#   db    — Postgres 16 (pgvector-ready for future chunk embedding)
+#   api   — FastAPI backend (uvicorn)
+#
+# Usage:
+#   docker compose up          # start both services
+#   docker compose up db       # start only Postgres (for local uvicorn dev)
+#   docker compose down -v     # stop and remove volumes
+#
+# Env overrides: copy .env.example → .env and edit before running.
+##############################################################################
+
+services:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Postgres  (pgvector image includes the vector extension out of the box)
+  # ──────────────────────────────────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16      # drop-in Postgres 16 + pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tlf_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tlf_password}
+      POSTGRES_DB: ${POSTGRES_DB:-tlf_shell_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d   # optional: drop .sql init scripts here
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tlf_user} -d ${POSTGRES_DB:-tlf_shell_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # FastAPI backend
+  # ──────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-tlf_user}:${POSTGRES_PASSWORD:-tlf_password}@db:5432/${POSTGRES_DB:-tlf_shell_db}"
+      DB_ECHO: "${DB_ECHO:-false}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Hot-reload source in development (remove in production)
+      - .:/app
+    command: >
+      uvicorn app:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+
+volumes:
+  postgres_data:

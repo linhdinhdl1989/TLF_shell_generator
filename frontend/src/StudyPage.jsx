@@ -1189,6 +1189,132 @@ function GlobalRequirementsTab({ studyId }) {
   );
 }
 
+// ─── Shell Document Preview ───────────────────────────────────────────────────
+// Renders a shell as a Word/Excel-style regulatory document table.
+
+function ShellDocumentPreview({ shell, compact = false }) {
+  if (!shell) return null;
+
+  const typeLabel =
+    shell.type === "table" ? "Table" : shell.type === "listing" ? "Listing" : "Figure";
+  const tableId = shell.tlf_id || shell.id;
+  const columns = shell.columns || [];
+  const rows = shell.rows || [];
+  const footnotes = shell.footnotes || [];
+
+  const titleClass = compact ? "text-xs" : "text-sm";
+  const cellClass = compact ? "text-xs py-0.5" : "text-sm py-1";
+  const px = compact ? "px-3" : "px-8";
+  const ptitle = compact ? "px-3 pb-3 pt-3" : "px-8 pb-5 pt-6";
+
+  return (
+    <div
+      className="bg-white w-full"
+      style={{ fontFamily: "'Times New Roman', Times, serif" }}
+    >
+      {/* ── Title block ── */}
+      <div className={`text-center ${ptitle}`}>
+        <p className={`font-bold text-gray-900 uppercase tracking-widest ${compact ? "text-xs" : "text-xs"} mb-0.5`}>
+          {typeLabel} {tableId}
+        </p>
+        <p className={`font-bold text-gray-900 leading-tight ${compact ? "text-xs" : "text-sm"}`}>
+          {shell.title || "Untitled Table"}
+        </p>
+        {shell.subtitle && (
+          <p className={`text-gray-700 mt-1 ${titleClass}`}>{shell.subtitle}</p>
+        )}
+        {shell.population && (
+          <p className={`text-gray-600 italic mt-0.5 ${titleClass}`}>{shell.population}</p>
+        )}
+      </div>
+
+      {/* ── Table ── */}
+      <div className={`overflow-x-auto ${px}`}>
+        <table
+          className="w-full border-collapse"
+          style={{ borderTop: "1.5px solid #111", borderBottom: "1.5px solid #111" }}
+        >
+          <thead>
+            {columns.length > 0 && (
+              <tr style={{ borderBottom: "1px solid #555" }}>
+                {columns.map((col, i) => (
+                  <th
+                    key={col.id ?? i}
+                    className={`${cellClass} font-bold text-gray-900 ${
+                      i === 0 ? "text-left pr-4" : "text-center px-3"
+                    }`}
+                    style={
+                      compact
+                        ? { minWidth: Math.min(col.width || 80, 120) }
+                        : { minWidth: col.width || 80, maxWidth: col.width ? col.width + 40 : undefined }
+                    }
+                  >
+                    {col.label || `Column ${i + 1}`}
+                  </th>
+                ))}
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={columns.length || 1}
+                  className={`${cellClass} text-center text-gray-400 italic py-6`}
+                >
+                  No content rows defined
+                </td>
+              </tr>
+            ) : (
+              rows.map((row, ri) => {
+                const isHdr = row.isHeader || row.is_header;
+                return (
+                  <tr
+                    key={row.id ?? ri}
+                    style={{ borderBottom: "0.5px solid #d1d5db" }}
+                    className={isHdr ? "bg-gray-50" : ""}
+                  >
+                    <td
+                      className={`${cellClass} pr-4 ${
+                        isHdr ? "font-bold text-gray-900" : "text-gray-800"
+                      }`}
+                      style={{ paddingLeft: `${(row.indent || 0) * 20 + 4}px` }}
+                    >
+                      {row.label || <em className="text-gray-400">—</em>}
+                    </td>
+                    {columns.slice(1).map((col, ci) => (
+                      <td
+                        key={col.id ?? ci}
+                        className={`${cellClass} text-center px-3 text-gray-400`}
+                      >
+                        {isHdr ? "" : "xx"}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Footnotes ── */}
+      {footnotes.length > 0 && (
+        <div className={`${px} pt-2 ${compact ? "pb-3" : "pb-6"} border-t border-gray-300 mt-1`}>
+          {footnotes.map((fn, i) => (
+            <p
+              key={i}
+              className={`${titleClass} text-gray-600 leading-snug ${i > 0 ? "mt-0.5" : ""}`}
+            >
+              {fn}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab 4: AI Shells (backend-wired) ────────────────────────────────────────
 
 function AIShellsTab({ studyId, studyName }) {
@@ -1209,6 +1335,9 @@ function AIShellsTab({ studyId, studyName }) {
   // null = not yet fetched for this shell, [] = fetched but empty, [...] = loaded
   const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(false);
   const [chatHistoryError, setChatHistoryError] = useState(null);
+
+  // ── Preview / edit mode toggle (default: preview) ──
+  const [previewMode, setPreviewMode] = useState(true);
 
   // ── Shell audit history ──
   const [showShellHistory, setShowShellHistory] = useState(false);
@@ -1624,7 +1753,7 @@ function AIShellsTab({ studyId, studyName }) {
       {/* ── Center + Right ── */}
       {activeShell ? (
         <div className="flex-1 flex flex-col lg:flex-row gap-4 min-w-0">
-          {/* ── Center: editor ── */}
+          {/* ── Center: editor or document preview ── */}
           <div className="flex-1 flex flex-col gap-4 min-w-0">
             {/* Top bar */}
             <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-3 flex-wrap">
@@ -1638,6 +1767,29 @@ function AIShellsTab({ studyId, studyName }) {
                 placeholder="Shell title"
               />
               <SaveBadge />
+              {/* Preview / Edit mode toggle */}
+              <div className="flex items-center rounded-lg border border-gray-200 overflow-hidden flex-shrink-0">
+                <button
+                  onClick={() => setPreviewMode(true)}
+                  className={`flex items-center gap-1 text-xs px-2.5 py-1.5 transition ${
+                    previewMode
+                      ? "bg-indigo-600 text-white"
+                      : "bg-white text-gray-500 hover:bg-gray-50"
+                  }`}
+                >
+                  <Eye size={11} /> Preview
+                </button>
+                <button
+                  onClick={() => setPreviewMode(false)}
+                  className={`flex items-center gap-1 text-xs px-2.5 py-1.5 transition border-l border-gray-200 ${
+                    !previewMode
+                      ? "bg-indigo-600 text-white"
+                      : "bg-white text-gray-500 hover:bg-gray-50"
+                  }`}
+                >
+                  <Table size={11} /> Edit
+                </button>
+              </div>
               <button
                 onClick={() => updateActiveShell({ status: "approved" })}
                 className="flex items-center gap-1.5 bg-green-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-green-700 transition"
@@ -1646,30 +1798,58 @@ function AIShellsTab({ studyId, studyName }) {
               </button>
             </div>
 
+            {previewMode ? (
+              /* ── Document Preview (full center panel) ── */
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex-1">
+                <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Eye size={14} className="text-indigo-500" />
+                    <span className="font-semibold text-gray-700 text-sm">Document Preview</span>
+                  </div>
+                  <span className="text-xs text-gray-400 italic">Read-only · switch to Edit to modify</span>
+                </div>
+                <div className="overflow-y-auto" style={{ maxHeight: "72vh" }}>
+                  <ShellDocumentPreview shell={activeShell} />
+                </div>
+              </div>
+            ) : (
+              /* ── Editor panels ── */
+              <>
             {/* Header Information */}
             <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Header Information</h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Population</label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Subtitle</label>
                   <input
-                    value={activeShell.population || ""}
-                    onChange={(e) => updateActiveShell({ population: e.target.value })}
+                    value={activeShell.subtitle || ""}
+                    onChange={(e) => updateActiveShell({ subtitle: e.target.value })}
                     className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                    placeholder="e.g. Safety Analysis Set"
+                    placeholder="e.g. by Treatment Arm (Part 1)"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Shell Type</label>
-                  <select
-                    value={activeShell.type || "table"}
-                    onChange={(e) => updateActiveShell({ type: e.target.value })}
-                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  >
-                    <option value="table">Table</option>
-                    <option value="listing">Listing</option>
-                    <option value="figure">Figure</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Population</label>
+                    <input
+                      value={activeShell.population || ""}
+                      onChange={(e) => updateActiveShell({ population: e.target.value })}
+                      className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      placeholder="e.g. Safety Analysis Set"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Shell Type</label>
+                    <select
+                      value={activeShell.type || "table"}
+                      onChange={(e) => updateActiveShell({ type: e.target.value })}
+                      className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                      <option value="table">Table</option>
+                      <option value="listing">Listing</option>
+                      <option value="figure">Figure</option>
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1792,75 +1972,69 @@ function AIShellsTab({ studyId, studyName }) {
                 )}
               </div>
             </div>
-          </div>
 
-          {/* ── Right panel: preview + chat ── */}
-          <div className="lg:w-80 xl:w-96 flex-shrink-0 flex flex-col gap-4">
-            {/* Live Mock Output */}
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex-shrink-0">
-              <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-                <Table size={14} className="text-indigo-500" />
-                <span className="font-semibold text-gray-700 text-sm">Live Mock Output</span>
+            {/* Footnotes Editor */}
+            <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Footnotes</h4>
+                <button
+                  onClick={() =>
+                    updateActiveShell({ footnotes: [...(activeShell.footnotes || []), ""] })
+                  }
+                  className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium transition"
+                >
+                  <Plus size={12} /> Add Footnote
+                </button>
               </div>
-              <div className="overflow-x-auto p-3">
-                {/* Title block */}
-                <div className="mb-2 pb-2 border-b border-gray-300">
-                  <p className="text-xs font-semibold text-gray-800 leading-snug">{activeShell.title || "Untitled Shell"}</p>
-                  {activeShell.population && (
-                    <p className="text-xs text-gray-500 mt-0.5">{activeShell.population}</p>
-                  )}
-                </div>
-                {/* Table */}
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr>
-                      {activeShell.columns.map((col, i) => (
-                        <th
-                          key={col.id}
-                          className={`py-1.5 text-xs font-bold text-gray-800 border-b-2 border-gray-700 whitespace-nowrap ${i === 0 ? "text-left pr-3" : "text-center px-2"}`}
-                          style={{ minWidth: Math.min(col.width, 140) }}
-                        >
-                          {col.label}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeShell.rows.length === 0 ? (
-                      <tr>
-                        <td colSpan={activeShell.columns.length} className="py-3 text-center text-gray-400 italic text-xs">
-                          No rows defined
-                        </td>
-                      </tr>
-                    ) : (
-                      activeShell.rows.map((row) => (
-                        <tr key={row.id} className="border-b border-gray-100">
-                          <td
-                            className={`py-1 text-xs pr-3 ${row.isHeader ? "font-semibold text-gray-800" : "text-gray-600"}`}
-                            style={{ paddingLeft: `${row.indent * 12 + 2}px` }}
-                          >
-                            {row.label || <span className="italic text-gray-400">—</span>}
-                          </td>
-                          {activeShell.columns.slice(1).map((col) => (
-                            <td key={col.id} className="py-1 text-center text-gray-400 px-2">
-                              {row.isHeader ? "" : "xx"}
-                            </td>
-                          ))}
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-                {/* Footnotes */}
-                {activeShell.footnotes && activeShell.footnotes.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-gray-200 space-y-0.5">
-                    {activeShell.footnotes.map((fn, i) => (
-                      <p key={i} className="text-xs text-gray-500 italic leading-snug">{fn}</p>
-                    ))}
-                  </div>
+              <div className="space-y-2">
+                {(activeShell.footnotes || []).length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-3 italic">No footnotes.</p>
+                ) : (
+                  (activeShell.footnotes || []).map((fn, i) => (
+                    <div key={i} className="flex items-center gap-2 group">
+                      <span className="text-xs text-gray-400 flex-shrink-0">{i + 1}.</span>
+                      <input
+                        value={fn}
+                        onChange={(e) => {
+                          const next = [...(activeShell.footnotes || [])];
+                          next[i] = e.target.value;
+                          updateActiveShell({ footnotes: next });
+                        }}
+                        className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        placeholder="Footnote text…"
+                      />
+                      <button
+                        onClick={() => {
+                          const next = (activeShell.footnotes || []).filter((_, fi) => fi !== i);
+                          updateActiveShell({ footnotes: next });
+                        }}
+                        className="p-1 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100 flex-shrink-0"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))
                 )}
               </div>
             </div>
+            </>
+            )}
+          </div>
+
+          {/* ── Right panel: compact preview (edit mode) + chat ── */}
+          <div className="lg:w-80 xl:w-96 flex-shrink-0 flex flex-col gap-4">
+            {/* Compact preview — hidden when center is already showing full preview */}
+            {!previewMode && (
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex-shrink-0">
+                <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                  <Eye size={14} className="text-indigo-500" />
+                  <span className="font-semibold text-gray-700 text-sm">Shell Preview</span>
+                </div>
+                <div className="overflow-x-auto max-h-72 overflow-y-auto">
+                  <ShellDocumentPreview shell={activeShell} compact />
+                </div>
+              </div>
+            )}
 
             {/* Statistical Assistant chat */}
             <div className="bg-white rounded-xl border border-gray-200 flex flex-col flex-1 min-h-0">

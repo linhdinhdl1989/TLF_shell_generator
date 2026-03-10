@@ -38,8 +38,12 @@ All routes are scoped to a study_id for RLS-readiness.
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
@@ -56,6 +60,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1662,3 +1667,526 @@ async def log_audit_action(
     await db.flush()
     await db.refresh(action)
     return action
+
+
+# ===========================================================================
+# Export endpoints  (PRD §3.1 — study outputs for handoff and regulatory)
+# ===========================================================================
+
+def _shell_to_export_dict(shell: Shell) -> dict:
+    """Convert a Shell ORM object to a clean export dict."""
+    return {
+        "id": shell.id,
+        "tlf_id": shell.tlf_id,
+        "type": shell.type,
+        "title": shell.title,
+        "subtitle": shell.subtitle,
+        "population": shell.population,
+        "status": shell.status,
+        "columns": shell.columns or [],
+        "rows": shell.rows or [],
+        "footnotes": shell.footnotes or [],
+        "created_at": shell.created_at.isoformat() if shell.created_at else None,
+        "updated_at": shell.updated_at.isoformat() if shell.updated_at else None,
+    }
+
+
+def _tlf_to_export_dict(tlf: TLF) -> dict:
+    return {
+        "id": tlf.id,
+        "number": tlf.number,
+        "title": tlf.title,
+        "type": tlf.type,
+        "section_ref": tlf.section_ref,
+        "status": tlf.status,
+        "order_index": tlf.order_index,
+    }
+
+
+def _req_to_export_dict(req: GlobalRequirement) -> dict:
+    return {
+        "id": req.id,
+        "section_type": req.section_type,
+        "number_pattern": req.number_pattern,
+        "title_template": req.title_template,
+        "subtitle_template": req.subtitle_template,
+        "columns": req.columns or [],
+    }
+
+
+def _action_to_export_dict(action: Action) -> dict:
+    return {
+        "id": action.id,
+        "timestamp": action.timestamp.isoformat() if action.timestamp else None,
+        "type": action.type,
+        "entity_type": action.entity_type,
+        "target": action.target,
+        "summary": action.summary,
+        "actor": action.actor,
+        "tlf_id": action.tlf_id,
+        "shell_id": action.shell_id,
+    }
+
+
+@app.get(
+    "/studies/{study_id}/export/json",
+    tags=["Export"],
+    summary="Export full study as structured JSON",
+)
+async def export_study_json(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/json
+
+    Returns a complete JSON export of the study: metadata, TLF list,
+    global requirements, shells, and audit events.
+    Suitable for archival, programmer handoff, and regulatory review.
+    """
+    study = await _get_study(study_id, db)
+
+    tlfs_result = await db.execute(
+        select(TLF).where(TLF.study_id == study_id).order_by(TLF.order_index)
+    )
+    tlfs = tlfs_result.scalars().all()
+
+    reqs_result = await db.execute(
+        select(GlobalRequirement).where(GlobalRequirement.study_id == study_id)
+    )
+    reqs = reqs_result.scalars().all()
+
+    shells_result = await db.execute(
+        select(Shell).where(Shell.study_id == study_id).order_by(Shell.created_at)
+    )
+    shells = shells_result.scalars().all()
+
+    actions_result = await db.execute(
+        select(Action)
+        .where(Action.study_id == study_id)
+        .order_by(Action.timestamp.desc())
+        .limit(500)
+    )
+    actions = actions_result.scalars().all()
+
+    payload = {
+        "export_version": "1.0",
+        "export_timestamp": datetime.utcnow().isoformat() + "Z",
+        "study": {
+            "id": study.id,
+            "name": study.name,
+            "created_at": study.created_at.isoformat() if study.created_at else None,
+            "updated_at": study.updated_at.isoformat() if study.updated_at else None,
+        },
+        "tlf_list": [_tlf_to_export_dict(t) for t in tlfs],
+        "global_requirements": [_req_to_export_dict(r) for r in reqs],
+        "shells": [_shell_to_export_dict(s) for s in shells],
+        "audit_events": [_action_to_export_dict(a) for a in actions],
+    }
+
+    safe_name = study.name.replace(" ", "_").replace("/", "_")[:40]
+    filename = f"study_{safe_name}_export.json"
+
+    json_bytes = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+
+    return StreamingResponse(
+        io.BytesIO(json_bytes),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get(
+    "/studies/{study_id}/export/tlf-list.csv",
+    tags=["Export"],
+    summary="Export TLF list as CSV",
+)
+async def export_tlf_list_csv(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/tlf-list.csv
+
+    Returns TLF list as CSV with stable columns:
+    number, title, type, section, status
+    """
+    study = await _get_study(study_id, db)
+
+    result = await db.execute(
+        select(TLF).where(TLF.study_id == study_id).order_by(TLF.order_index)
+    )
+    tlfs = result.scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["number", "title", "type", "section", "status"])
+    for t in tlfs:
+        writer.writerow([
+            t.number or "",
+            t.title or "",
+            t.type or "",
+            t.section_ref or "",
+            t.status or "",
+        ])
+
+    safe_name = study.name.replace(" ", "_").replace("/", "_")[:40]
+    filename = f"study_{safe_name}_tlf_list.csv"
+
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get(
+    "/studies/{study_id}/export/shells.json",
+    tags=["Export"],
+    summary="Export all shells as JSON for programmer consumption",
+)
+async def export_shells_json(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/shells.json
+
+    Returns all shells with complete structure (title, subtitle, columns,
+    rows, footnotes). Suitable for SAS/R programmer handoff.
+    """
+    study = await _get_study(study_id, db)
+
+    result = await db.execute(
+        select(Shell).where(Shell.study_id == study_id).order_by(Shell.created_at)
+    )
+    shells = result.scalars().all()
+
+    payload = {
+        "export_version": "1.0",
+        "export_timestamp": datetime.utcnow().isoformat() + "Z",
+        "study_id": study_id,
+        "study_name": study.name,
+        "shells": [_shell_to_export_dict(s) for s in shells],
+    }
+
+    safe_name = study.name.replace(" ", "_").replace("/", "_")[:40]
+    filename = f"study_{safe_name}_shells.json"
+
+    json_bytes = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+
+    return StreamingResponse(
+        io.BytesIO(json_bytes),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get(
+    "/studies/{study_id}/export/audit.csv",
+    tags=["Export"],
+    summary="Export audit trail as CSV",
+)
+async def export_audit_csv(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/audit.csv
+
+    Returns audit events as CSV. Suitable for regulatory compliance review.
+    Columns: timestamp, entity_type, entity_id, action, summary, actor, target
+    """
+    study = await _get_study(study_id, db)
+
+    result = await db.execute(
+        select(Action)
+        .where(Action.study_id == study_id)
+        .order_by(Action.timestamp.desc())
+        .limit(2000)
+    )
+    actions = result.scalars().all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "timestamp", "entity_type", "entity_id", "action", "summary", "actor", "target"
+    ])
+    for a in actions:
+        entity_id = a.shell_id or a.tlf_id or a.study_id or ""
+        writer.writerow([
+            a.timestamp.isoformat() if a.timestamp else "",
+            a.entity_type or "",
+            entity_id,
+            a.type or "",
+            a.summary or "",
+            a.actor or "",
+            a.target or "",
+        ])
+
+    safe_name = study.name.replace(" ", "_").replace("/", "_")[:40]
+    filename = f"study_{safe_name}_audit.csv"
+
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue().encode("utf-8")),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get(
+    "/studies/{study_id}/export/shells/{shell_id}.docx",
+    tags=["Export"],
+    summary="Export a single shell as a Word document",
+)
+async def export_shell_docx(
+    study_id: str,
+    shell_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/shells/{shell_id}.docx
+
+    Returns a single shell as a Word .docx file with:
+    - Title at top (bold, centered)
+    - Subtitle / population line
+    - Table grid with column headers and row stubs
+    - Footnotes below
+
+    Suitable for programmer handoff and regulatory review.
+    """
+    try:
+        from docx import Document as DocxDocument
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+        from docx.oxml.ns import qn
+        from docx.oxml import OxmlElement
+    except ImportError:
+        raise HTTPException(
+            status_code=501,
+            detail="python-docx not installed. Run: pip install python-docx",
+        )
+
+    shell = await _get_shell(study_id, shell_id, db)
+
+    doc = DocxDocument()
+
+    # --- Page margins ---
+    section = doc.sections[0]
+    section.left_margin = Inches(1)
+    section.right_margin = Inches(1)
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+
+    # --- Title ---
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_para.add_run(shell.title or "Untitled Shell")
+    title_run.bold = True
+    title_run.font.size = Pt(12)
+
+    # --- Subtitle ---
+    if shell.subtitle:
+        sub_para = doc.add_paragraph()
+        sub_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sub_run = sub_para.add_run(shell.subtitle)
+        sub_run.font.size = Pt(11)
+
+    # --- Population line ---
+    if shell.population:
+        pop_para = doc.add_paragraph()
+        pop_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        pop_run = pop_para.add_run(f"Population: {shell.population}")
+        pop_run.font.size = Pt(10)
+        pop_run.italic = True
+
+    doc.add_paragraph()  # spacer
+
+    # --- Table ---
+    columns = shell.columns or []
+    rows = shell.rows or []
+
+    if not columns:
+        # Fallback: stub table with a single column
+        columns = [{"label": "Row Stub"}]
+
+    num_cols = len(columns) + 1  # +1 for row label column
+    tbl = doc.add_table(rows=1, cols=num_cols)
+    tbl.style = "Table Grid"
+
+    # Header row
+    hdr_cells = tbl.rows[0].cells
+    hdr_cells[0].text = "Row Stub"
+    hdr_cells[0].paragraphs[0].runs[0].bold = True
+    for i, col in enumerate(columns):
+        cell = hdr_cells[i + 1]
+        cell.text = col.get("label", f"Col {i+1}")
+        cell.paragraphs[0].runs[0].bold = True
+
+    # Data rows
+    for row in rows:
+        cells = tbl.add_row().cells
+        label = row.get("label", "")
+        indent = row.get("indent", 0)
+        is_header = row.get("is_header", False)
+
+        # Indent with spaces
+        cells[0].text = ("  " * indent) + label
+        if is_header:
+            for run in cells[0].paragraphs[0].runs:
+                run.bold = True
+
+        # Fill data columns with placeholder
+        for i in range(len(columns)):
+            cells[i + 1].text = "X"
+
+    doc.add_paragraph()  # spacer
+
+    # --- Footnotes ---
+    footnotes = shell.footnotes or []
+    if footnotes:
+        fn_para = doc.add_paragraph()
+        fn_run = fn_para.add_run("Footnotes:")
+        fn_run.bold = True
+        fn_run.font.size = Pt(9)
+        for fn in footnotes:
+            fn_p = doc.add_paragraph(style="List Bullet")
+            fn_run2 = fn_p.add_run(str(fn))
+            fn_run2.font.size = Pt(9)
+
+    # --- Serialize to bytes ---
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+
+    safe_title = (shell.title or "shell").replace(" ", "_").replace("/", "_")[:50]
+    filename = f"shell_{safe_title}.docx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get(
+    "/studies/{study_id}/export/package.zip",
+    tags=["Export"],
+    summary="Export complete study package as ZIP bundle",
+)
+async def export_study_package_zip(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/export/package.zip
+
+    Returns a ZIP file containing all study artifacts:
+    - study.json  (complete study export)
+    - tlf_list.csv
+    - global_requirements.json
+    - shells.json
+    - audit.csv
+    """
+    study = await _get_study(study_id, db)
+
+    # Load all data
+    tlfs_result = await db.execute(
+        select(TLF).where(TLF.study_id == study_id).order_by(TLF.order_index)
+    )
+    tlfs = tlfs_result.scalars().all()
+
+    reqs_result = await db.execute(
+        select(GlobalRequirement).where(GlobalRequirement.study_id == study_id)
+    )
+    reqs = reqs_result.scalars().all()
+
+    shells_result = await db.execute(
+        select(Shell).where(Shell.study_id == study_id).order_by(Shell.created_at)
+    )
+    shells = shells_result.scalars().all()
+
+    actions_result = await db.execute(
+        select(Action)
+        .where(Action.study_id == study_id)
+        .order_by(Action.timestamp.desc())
+        .limit(2000)
+    )
+    actions = actions_result.scalars().all()
+
+    export_ts = datetime.utcnow().isoformat() + "Z"
+
+    # --- study.json ---
+    study_json = json.dumps({
+        "export_version": "1.0",
+        "export_timestamp": export_ts,
+        "study": {
+            "id": study.id,
+            "name": study.name,
+            "created_at": study.created_at.isoformat() if study.created_at else None,
+            "updated_at": study.updated_at.isoformat() if study.updated_at else None,
+        },
+        "tlf_list": [_tlf_to_export_dict(t) for t in tlfs],
+        "global_requirements": [_req_to_export_dict(r) for r in reqs],
+        "shells": [_shell_to_export_dict(s) for s in shells],
+        "audit_events": [_action_to_export_dict(a) for a in actions],
+    }, indent=2, ensure_ascii=False).encode("utf-8")
+
+    # --- tlf_list.csv ---
+    tlf_buf = io.StringIO()
+    tlf_writer = csv.writer(tlf_buf)
+    tlf_writer.writerow(["number", "title", "type", "section", "status"])
+    for t in tlfs:
+        tlf_writer.writerow([t.number or "", t.title or "", t.type or "",
+                              t.section_ref or "", t.status or ""])
+    tlf_csv = tlf_buf.getvalue().encode("utf-8")
+
+    # --- global_requirements.json ---
+    reqs_json = json.dumps(
+        [_req_to_export_dict(r) for r in reqs], indent=2, ensure_ascii=False
+    ).encode("utf-8")
+
+    # --- shells.json ---
+    shells_json = json.dumps({
+        "export_version": "1.0",
+        "export_timestamp": export_ts,
+        "study_id": study_id,
+        "study_name": study.name,
+        "shells": [_shell_to_export_dict(s) for s in shells],
+    }, indent=2, ensure_ascii=False).encode("utf-8")
+
+    # --- audit.csv ---
+    audit_buf = io.StringIO()
+    audit_writer = csv.writer(audit_buf)
+    audit_writer.writerow([
+        "timestamp", "entity_type", "entity_id", "action", "summary", "actor", "target"
+    ])
+    for a in actions:
+        entity_id = a.shell_id or a.tlf_id or a.study_id or ""
+        audit_writer.writerow([
+            a.timestamp.isoformat() if a.timestamp else "",
+            a.entity_type or "", entity_id, a.type or "",
+            a.summary or "", a.actor or "", a.target or "",
+        ])
+    audit_csv = audit_buf.getvalue().encode("utf-8")
+
+    # --- Build ZIP ---
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("study.json", study_json)
+        zf.writestr("tlf_list.csv", tlf_csv)
+        zf.writestr("global_requirements.json", reqs_json)
+        zf.writestr("shells.json", shells_json)
+        zf.writestr("audit.csv", audit_csv)
+
+    zip_buf.seek(0)
+
+    safe_name = study.name.replace(" ", "_").replace("/", "_")[:40]
+    filename = f"study_{safe_name}_package.zip"
+
+    return StreamingResponse(
+        zip_buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

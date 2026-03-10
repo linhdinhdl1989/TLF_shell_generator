@@ -253,7 +253,7 @@ class Message(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     # Optional: structured metadata attached by AI (chunk refs, confidence)
-    metadata = Column(JSON, default=dict)
+    extra_metadata = Column(JSON, default=dict)
 
     study = relationship("Study", back_populates="messages")
     tlf = relationship("TLF", back_populates="messages")

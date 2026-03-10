@@ -333,7 +333,7 @@ class MessageRead(BaseModel):
     shell_id: Optional[str] = None
     role: MessageRole
     text: str
-    metadata: Optional[Dict[str, Any]] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
     timestamp: datetime
 
     model_config = {"from_attributes": True}

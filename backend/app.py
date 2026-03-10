@@ -117,7 +117,7 @@ app = FastAPI(
 # Allow the React dev server (and any local origin) to call the API.
 # Restrict CORS_ORIGINS in production via environment variable.
 _ALLOWED_ORIGINS: List[str] = os.getenv(
-    "CORS_ORIGINS", "http://localhost:3000,http://localhost:5173"
+    "CORS_ORIGINS", "http://localhost:3000,http://localhost:5000,http://localhost:5173"
 ).split(",")
 
 app.add_middleware(
@@ -980,7 +980,7 @@ async def post_chat(
         role="ai",
         text=ai_text,
         timestamp=datetime.utcnow(),
-        metadata={
+        extra_metadata={
             "model": "stub",
             "retrieved_chunks": [],
             "confidence": None,

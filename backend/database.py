@@ -26,6 +26,7 @@ async def my_route(db: AsyncSession = Depends(get_db)):
 """
 
 import os
+from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -40,25 +41,46 @@ _RAW_URL: str = os.getenv(
     "sqlite+aiosqlite:///./tlf_shell.db",
 )
 
-def _normalise_url(url: str) -> str:
-    """Ensure the correct async driver prefix is present."""
+
+def _normalise_url(url: str) -> tuple[str, dict]:
+    """
+    Ensure the correct async driver prefix is present.
+    Returns (normalised_url, connect_args).
+
+    asyncpg does not accept sslmode as a query parameter — strip it and
+    pass ssl=True/False via connect_args instead.
+    """
+    connect_args: dict = {}
+
     # Heroku-style postgres:// → postgresql+asyncpg://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     # Plain postgresql:// → postgresql+asyncpg://
     elif url.startswith("postgresql://") and "+asyncpg" not in url:
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
 
-DATABASE_URL: str = _normalise_url(_RAW_URL)
+    # Strip sslmode from query string for asyncpg (it uses connect_args ssl= instead)
+    if url.startswith("postgresql+asyncpg://"):
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        sslmode = qs.pop("sslmode", [None])[0]
+        if sslmode and sslmode != "disable":
+            connect_args["ssl"] = True
+        new_query = urlencode({k: v[0] for k, v in qs.items()})
+        url = urlunparse(parsed._replace(query=new_query))
+
+    return url, connect_args
+
+
+DATABASE_URL, _extra_connect_args = _normalise_url(_RAW_URL)
 
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
 
-# SQLite requires connect_args for async usage; Postgres does not.
+# SQLite requires check_same_thread=False for async usage; Postgres does not.
 _connect_args: dict = (
-    {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+    {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else _extra_connect_args
 )
 
 engine = create_async_engine(

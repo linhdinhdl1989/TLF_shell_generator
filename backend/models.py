@@ -50,6 +50,7 @@ class Study(Base):
 
     documents = relationship("Document", back_populates="study", cascade="all, delete-orphan")
     tlfs = relationship("TLF", back_populates="study", cascade="all, delete-orphan", order_by="TLF.order_index")
+    tlf_list_items = relationship("TLFListItem", back_populates="study", cascade="all, delete-orphan", order_by="TLFListItem.order_index")
     global_requirements = relationship("GlobalRequirement", back_populates="study", cascade="all, delete-orphan")
     messages = relationship("Message", back_populates="study", cascade="all, delete-orphan")
     actions = relationship("Action", back_populates="study", cascade="all, delete-orphan")
@@ -300,3 +301,48 @@ class Action(Base):
     study = relationship("Study", back_populates="actions")
     tlf = relationship("TLF", back_populates="actions")
     shell = relationship("Shell", back_populates="actions")
+
+
+# ---------------------------------------------------------------------------
+# TLFListItem  (normalized TLF list entry with provenance and workflow state)
+# ---------------------------------------------------------------------------
+
+class TLFListItem(Base):
+    """Parsed/normalized TLF list entry with provenance and workflow state."""
+    __tablename__ = "tlf_list_items"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    study_id = Column(String, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    # Identity
+    number = Column(String, nullable=False)       # e.g. "14.1.1"
+    output_type = Column(String, nullable=True)   # table, listing, figure
+    section = Column(String, nullable=True)       # demographics, efficacy, safety, other
+
+    # Source text / extraction evidence
+    raw_title = Column(String, nullable=True)     # literal text from SAP or upload
+    source = Column(String, default="extracted")  # extracted, uploaded, user
+    extraction_notes = Column(Text, nullable=True)
+
+    # Normalized title structure
+    title = Column(String, nullable=False)
+    subtitle = Column(String, nullable=True)
+    analysis_set = Column(String, nullable=True)
+    composed_title = Column(String, nullable=False)
+
+    # Provenance
+    title_source = Column(String, nullable=True)
+    subtitle_source = Column(String, nullable=True)
+    analysis_set_source = Column(String, nullable=True)
+    parsing_confidence = Column(String, default="medium")  # high, medium, low
+
+    # Workflow
+    status = Column(String, default="pending")    # pending, reviewed, approved
+    approved = Column(Boolean, default=False)
+
+    order_index = Column(Integer, default=0, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    study = relationship("Study", back_populates="tlf_list_items")

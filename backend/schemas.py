@@ -401,6 +401,63 @@ class ActionList(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# TLFListItem schemas
+# ---------------------------------------------------------------------------
+
+class TLFListItemRead(BaseModel):
+    id: str
+    study_id: str
+    number: str
+    output_type: Optional[str] = None
+    section: Optional[str] = None
+    raw_title: Optional[str] = None
+    source: str
+    extraction_notes: Optional[str] = None
+    title: str
+    subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    composed_title: str
+    title_source: Optional[str] = None
+    subtitle_source: Optional[str] = None
+    analysis_set_source: Optional[str] = None
+    parsing_confidence: str
+    status: str
+    approved: bool
+    order_index: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = {"from_attributes": True}
+
+class TLFListItemCreate(BaseModel):
+    number: str
+    title: str
+    subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    raw_title: Optional[str] = None
+    section: Optional[str] = "other"
+    output_type: Optional[str] = "table"
+    source: str = "user"
+    order_index: int = 0
+
+class TLFListItemUpdate(BaseModel):
+    number: Optional[str] = None
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    section: Optional[str] = None
+    output_type: Optional[str] = None
+    status: Optional[str] = None
+    approved: Optional[bool] = None
+    order_index: Optional[int] = None
+
+class TLFListResponse(BaseModel):
+    items: List[TLFListItemRead]
+    total: int
+    approved_count: int
+
+class BulkUpdateAnalysisSetRequest(BaseModel):
+    item_ids: List[str]
+    analysis_set: str
 # Audit Events  (enriched view of Actions for the UI history panel)
 # ---------------------------------------------------------------------------
 

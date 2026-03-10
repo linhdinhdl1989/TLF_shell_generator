@@ -39,7 +39,7 @@ python-dotenv>=1.0.0               # load .env for local dev
 # Uncomment as the parse pipeline is implemented:
 # pdfplumber>=0.11.0               # PDF text + table extraction
 # python-docx>=1.1.0               # Word (.docx) extraction
-# openpyxl>=3.1.2                  # Excel (.xlsx) extraction
+openpyxl>=3.1.2                  # Excel (.xlsx) extraction
 # pytesseract>=0.3.10              # OCR fallback for scanned PDFs
 # Pillow>=10.3.0                   # image pre-processing for OCR
 

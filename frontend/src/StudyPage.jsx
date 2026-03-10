@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import TLFListTab from "./TLFListTab";
 import {
   ArrowLeft,
   FileText,
@@ -2592,7 +2593,7 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
                 <span className="text-sm">Connecting to study…</span>
               </div>
             ) : (
-              <TLFTab studyId={backendStudyId || studyId} />
+              <TLFListTab studyId={backendStudyId || studyId} />
             )
           )}
           {activeTab === "global" && (

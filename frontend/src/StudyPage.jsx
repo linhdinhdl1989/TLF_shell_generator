@@ -84,8 +84,8 @@ const TLF_STATUS_COLORS = {
 };
 
 const SHELL_STATUS_COLORS = {
-  generated: "bg-indigo-100 text-indigo-700",
-  pending: "bg-gray-100 text-gray-500",
+  draft: "bg-indigo-100 text-indigo-700",
+  in_review: "bg-yellow-100 text-yellow-700",
   approved: "bg-green-100 text-green-700",
 };
 
@@ -869,8 +869,9 @@ function AIShellsTab({ studyId, studyName }) {
         const data = await r.json();
 
         // If action type was refine_title and response looks like a title, apply it
-        if (actionType === "refine_title" && data.text && data.text.length < 200) {
-          updateActiveShell({ title: data.text.replace(/^["']|["']$/g, "").trim() });
+        const aiText = data.ai_message?.text || data.text || "";
+        if (actionType === "refine_title" && aiText && aiText.length < 200) {
+          updateActiveShell({ title: aiText.replace(/^["']|["']$/g, "").trim() });
         }
 
         // Refresh from backend — backend is the source of truth for chat history
@@ -996,7 +997,7 @@ function AIShellsTab({ studyId, studyName }) {
                 <p className="text-xs text-gray-700 mt-0.5 line-clamp-2 leading-snug">{shell.title}</p>
                 <div className="mt-1.5">
                   <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${SHELL_STATUS_COLORS[shell.status] || "bg-gray-100 text-gray-500"}`}>
-                    {shell.status === "generated" ? "✓ GENERATED" : (shell.status || "PENDING").toUpperCase()}
+                    {shell.status === "approved" ? "✓ APPROVED" : (shell.status || "draft").replace("_", " ").toUpperCase()}
                   </span>
                 </div>
               </button>
@@ -1367,11 +1368,47 @@ const TABS = [
   { id: "shells", label: "AI Shells", icon: Layers },
 ];
 
-export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
+export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }) {
   const [activeTab, setActiveTab] = useState("documents");
   const [description, setDescription] = useState("Phase 3 clinical trial for a new hypertension medication.");
   const [showGlobalReqPanel, setShowGlobalReqPanel] = useState(false);
   const [globalReqText, setGlobalReqText] = useState("");
+
+  // Resolved backend UUID for API calls (studyId prop may be a display code like "XYZ-101")
+  const [backendStudyId, setBackendStudyId] = useState(null);
+  const [studyBootstrapping, setStudyBootstrapping] = useState(true);
+
+  useEffect(() => {
+    const name = studyName || studyId;
+    const bootstrap = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/studies?limit=200`);
+        if (!r.ok) throw new Error(`Studies fetch failed (${r.status})`);
+        const data = await r.json();
+        const studies = data.studies || [];
+        const found = studies.find((s) => s.name === name);
+        if (found) {
+          setBackendStudyId(found.id);
+          return;
+        }
+        // Study not found — create it
+        const cr = await fetch(`${API_BASE}/studies`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (!cr.ok) throw new Error(`Study create failed (${cr.status})`);
+        const created = await cr.json();
+        setBackendStudyId(created.id);
+      } catch (err) {
+        console.error("Study bootstrap error:", err);
+        setBackendStudyId(studyId); // last-resort fallback
+      } finally {
+        setStudyBootstrapping(false);
+      }
+    };
+    bootstrap();
+  }, [studyId, studyName]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const saveRequirements = () => {
     console.log("Study requirements saved:", { studyId, description, globalReqText });
@@ -1488,7 +1525,16 @@ export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
           {activeTab === "documents" && <DocumentsTab />}
           {activeTab === "tlf" && <TLFTab />}
           {activeTab === "global" && <GlobalRequirementsTab />}
-          {activeTab === "shells" && <AIShellsTab studyId={studyId} studyName={studyName} />}
+          {activeTab === "shells" && (
+            studyBootstrapping ? (
+              <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+                <Loader2 size={20} className="animate-spin" />
+                <span className="text-sm">Connecting to study…</span>
+              </div>
+            ) : (
+              <AIShellsTab studyId={backendStudyId || studyId} studyName={studyName} />
+            )
+          )}
         </div>
       </main>
     </div>

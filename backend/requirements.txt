@@ -36,12 +36,11 @@ python-dotenv>=1.0.0               # load .env for local dev
 # ─────────────────────────────────────────────
 # Document parsing (Phase 1 parse-once pipeline)
 # ─────────────────────────────────────────────
-# Uncomment as the parse pipeline is implemented:
-# pdfplumber>=0.11.0               # PDF text + table extraction
-# python-docx>=1.1.0               # Word (.docx) extraction
-# openpyxl>=3.1.2                  # Excel (.xlsx) extraction
-# pytesseract>=0.3.10              # OCR fallback for scanned PDFs
-# Pillow>=10.3.0                   # image pre-processing for OCR
+pypdf>=3.9.0                       # PDF text extraction (parse.py)
+python-docx>=1.1.0                 # Word (.docx) extraction (parse.py)
+# openpyxl>=3.1.2                  # Excel (.xlsx) extraction — future
+# pytesseract>=0.3.10              # OCR fallback for scanned PDFs — future
+# Pillow>=10.3.0                   # image pre-processing for OCR — future
 
 # ─────────────────────────────────────────────
 # AI integration (Phase 1 per-shell AI loop)
@@ -60,9 +59,8 @@ python-dotenv>=1.0.0               # load .env for local dev
 # ─────────────────────────────────────────────
 # Export (Phase 1 export endpoints)
 # ─────────────────────────────────────────────
-# Uncomment when export is implemented:
-# python-docx>=1.1.0               # Word export
-# openpyxl>=3.1.2                  # Excel export
+# python-docx already active above (parsing + export share the same library)
+# openpyxl>=3.1.2                  # Excel export — future
 
 # ─────────────────────────────────────────────
 # Dev / testing

@@ -10,10 +10,12 @@ Quick smoke-test sequence:
         -H "Content-Type: application/json" \
         -d '{"name": "StudyXYZ"}' | jq .
 
-    # 2. Upload a document (multipart)
+    # 2. Upload a document (PDF or Word, multipart)
     curl -s -X POST http://localhost:8000/studies/{study_id}/documents \
         -F "file=@sap.pdf" \
         -F "type=sap" | jq .
+    # Poll until status == "ready":
+    curl -s http://localhost:8000/studies/{study_id}/documents | jq .
 
     # 3. Get the TLF list (empty until extracted/added)
     curl -s http://localhost:8000/studies/{study_id}/tlf-list | jq .
@@ -61,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db, init_db
 from models import Action, Document, GlobalRequirement, Message, Shell, Study, TLF
+from parse import parse_document
 from schemas import (
     ActionCreate,
     ActionList,
@@ -188,54 +191,52 @@ async def _log_action(
 
 
 # ---------------------------------------------------------------------------
-# Background task: document parse stub  (PRD §4.7)
+# Background task: document parse pipeline  (PRD §4.7)
 # ---------------------------------------------------------------------------
 
-async def _parse_document_stub(doc_id: str) -> None:
+async def _parse_document_bg(
+    doc_id: str,
+    file_bytes: bytes,
+    filename: str,
+    doc_type: str,
+) -> None:
     """
-    Stub for the parse-once pipeline (PRD §4.7).
+    Parse-once pipeline (PRD §4.7).
 
-    Real implementation would:
-      1. Retrieve raw bytes from temporary storage.
-      2. Extract text (pdfplumber / python-docx / openpyxl).
-      3. Fallback OCR for scanned PDFs.
-      4. Split into chunks with section_ref tags.
-      5. Embed chunks (pgvector / external API).
-      6. Store parsed_content + chunks_meta on Document row.
-      7. Delete raw file.
-      8. Set status = "ready" (or "error" on failure).
+    Steps
+    -----
+    1. Run parse_document() in a thread (CPU-bound; avoids blocking the loop).
+    2. Store parsed_content + chunks_meta on the Document row.
+    3. Set status = "ready" (or "error" on failure).
+    4. Raw bytes are discarded — only extracted text is persisted.
 
-    The stub simply marks the document as "ready" after a simulated delay.
-    Replace with a Celery/ARQ/BackgroundTasks task in production.
+    Runs outside the request session via a fresh AsyncSessionLocal.
+    Replace with Celery / ARQ for large-scale deployments.
     """
     import asyncio
 
-    # Simulate I/O work (parsing, embedding)
-    await asyncio.sleep(0.5)
-
-    # Re-open a fresh session — background tasks run outside the request session
     from database import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
         doc = await session.get(Document, doc_id)
-        if doc is None:
+        if doc is None or doc.status != "processing":
             return
-        if doc.status == "processing":
-            doc.parsed_content = (
-                f"[STUB] Parsed content for document '{doc.name}' "
-                "(replace with real extraction pipeline)"
+
+        try:
+            # Run CPU-bound parsing in a thread to keep the event loop free
+            parsed_content, chunks_meta = await asyncio.to_thread(
+                parse_document, file_bytes, filename, doc_type
             )
-            doc.chunks_meta = [
-                {
-                    "chunk_id": str(uuid.uuid4()),
-                    "section_ref": "Section 1",
-                    "text": f"[STUB] Chunk 1 from {doc.name}",
-                    "embedding_id": None,
-                }
-            ]
+            doc.parsed_content = parsed_content
+            doc.chunks_meta = chunks_meta
             doc.status = "ready"
-            doc.updated_at = datetime.utcnow()
-            await session.commit()
+        except Exception as exc:  # noqa: BLE001
+            doc.parsed_content = f"[PARSE ERROR] {exc}"
+            doc.chunks_meta = []
+            doc.status = "error"
+
+        doc.updated_at = datetime.utcnow()
+        await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +371,10 @@ async def upload_document(
     await db.flush()
     await db.refresh(doc)
 
-    # Fire-and-forget parse pipeline (stub)
-    background_tasks.add_task(_parse_document_stub, doc.id)
+    # Fire-and-forget parse pipeline — passes bytes so no temp file is needed
+    background_tasks.add_task(
+        _parse_document_bg, doc.id, file_bytes, file.filename or "untitled", type.value
+    )
 
     return doc
 

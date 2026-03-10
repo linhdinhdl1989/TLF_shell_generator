@@ -315,6 +315,11 @@ class GlobalRequirementList(BaseModel):
     total: int
 
 
+class GlobalRequirementBulkUpdate(BaseModel):
+    """Bulk-replace all global requirements for a study (PUT /studies/{id}/global-requirements)."""
+    requirements: List[GlobalRequirementCreate]
+
+
 # ---------------------------------------------------------------------------
 # Message / Chat
 # ---------------------------------------------------------------------------

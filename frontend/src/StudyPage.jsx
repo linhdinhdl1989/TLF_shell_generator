@@ -685,27 +685,110 @@ function TLFTab({ studyId }) {
 
 // ─── Tab 3: Global Requirements ───────────────────────────────────────────────
 
-function GlobalRequirementsTab() {
-  const [sections, setSections] = useState(INITIAL_GLOBAL_REQS);
+// Adapters: backend ↔ frontend
+
+function _sectionTypeToName(sectionType) {
+  return sectionType
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function _nameToSectionType(name) {
+  return name.toLowerCase().replace(/\s+/g, "_");
+}
+
+function _backendColumnsToStrings(columns) {
+  if (!Array.isArray(columns)) return [];
+  return columns.map((c) => (typeof c === "string" ? c : c.label || c.key || ""));
+}
+
+function _stringsToBackendColumns(strings) {
+  return strings.map((label, i) => ({
+    key: label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `col_${i}`,
+    label,
+  }));
+}
+
+function _fromBackendReq(req) {
+  return {
+    id: req.id,
+    name: _sectionTypeToName(req.section_type),
+    numberPattern: req.number_pattern || "",
+    titleTemplate: req.title_template || "",
+    subtitleTemplate: req.subtitle_template || "",
+    columns: _backendColumnsToStrings(req.columns),
+  };
+}
+
+function _toBackendReq(section) {
+  return {
+    section_type: _nameToSectionType(section.name),
+    number_pattern: section.numberPattern || null,
+    title_template: section.titleTemplate || null,
+    subtitle_template: section.subtitleTemplate || null,
+    columns: _stringsToBackendColumns(section.columns),
+  };
+}
+
+function GlobalRequirementsTab({ studyId }) {
+  const [sections, setSections] = useState([]);
   const [newSectionName, setNewSectionName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [saveError, setSaveError] = useState(null);
+
+  // ── Load from backend ──────────────────────────────────────────────────────
+
+  const loadRequirements = useCallback(async () => {
+    if (!studyId) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/global-requirements`);
+      if (!r.ok) throw new Error(`Load failed (${r.status})`);
+      const data = await r.json();
+      setSections((data.requirements || []).map(_fromBackendReq));
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [studyId]);
+
+  useEffect(() => {
+    if (studyId) loadRequirements();
+  }, [studyId, loadRequirements]);
+
+  // ── Local edit helpers ────────────────────────────────────────────────────
 
   const updateSection = (id, field, value) => {
     setSections((prev) => prev.map((s) => (s.id === id ? { ...s, [field]: value } : s)));
   };
 
   const addColumn = (id) => {
-    setSections((prev) => prev.map((s) => (s.id === id ? { ...s, columns: [...s.columns, "New Column"] } : s)));
+    setSections((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, columns: [...s.columns, "New Column"] } : s))
+    );
   };
 
   const updateColumn = (sectionId, colIdx, value) => {
     setSections((prev) =>
-      prev.map((s) => (s.id === sectionId ? { ...s, columns: s.columns.map((c, i) => (i === colIdx ? value : c)) } : s))
+      prev.map((s) =>
+        s.id === sectionId
+          ? { ...s, columns: s.columns.map((c, i) => (i === colIdx ? value : c)) }
+          : s
+      )
     );
   };
 
   const removeColumn = (sectionId, colIdx) => {
     setSections((prev) =>
-      prev.map((s) => (s.id === sectionId ? { ...s, columns: s.columns.filter((_, i) => i !== colIdx) } : s))
+      prev.map((s) =>
+        s.id === sectionId
+          ? { ...s, columns: s.columns.filter((_, i) => i !== colIdx) }
+          : s
+      )
     );
   };
 
@@ -715,33 +798,143 @@ function GlobalRequirementsTab() {
     if (!newSectionName.trim()) return;
     setSections((prev) => [
       ...prev,
-      { id: Date.now(), name: newSectionName.trim(), numberPattern: "14.x", titleTemplate: "Table {number}: {title}", columns: ["Parameter", "Value"] },
+      {
+        id: `temp-${Date.now()}`,
+        name: newSectionName.trim(),
+        numberPattern: "14.x",
+        titleTemplate: "Table {number}: {title}",
+        subtitleTemplate: "",
+        columns: ["Parameter", "Value"],
+      },
     ]);
     setNewSectionName("");
   };
 
-  const saveAll = () => {
-    console.log("Global Requirements saved:", sections);
-    alert("Global Requirements saved (see console).");
+  // ── Save to backend (bulk replace) ────────────────────────────────────────
+
+  const saveAll = async () => {
+    if (!studyId) return;
+    setSaveState("saving");
+    setSaveError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/global-requirements`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requirements: sections.map(_toBackendReq) }),
+      });
+      if (!r.ok) {
+        const errText = await r.text().catch(() => "");
+        throw new Error(`Save failed (${r.status})${errText ? ": " + errText : ""}`);
+      }
+      const data = await r.json();
+      // Update with real backend IDs
+      setSections((data.requirements || []).map(_fromBackendReq));
+      setSaveState("saved");
+      setTimeout(() => setSaveState("idle"), 2500);
+    } catch (err) {
+      console.error("Global requirements save error:", err);
+      setSaveError(err.message);
+      setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 4000);
+    }
   };
+
+  // ── Loading / error states ────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+        <Loader2 size={20} className="animate-spin" />
+        <span className="text-sm">Loading global requirements…</span>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <AlertCircle size={24} className="text-red-400" />
+        <p className="text-sm font-medium text-red-600">Failed to load requirements</p>
+        <p className="text-xs text-red-400">{loadError}</p>
+        <button onClick={loadRequirements} className="text-sm text-indigo-600 underline hover:text-indigo-800">
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
+      {/* Action bar */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <p className="text-sm text-gray-500">Define shell structure templates per section. These apply to all shells in that section.</p>
-        <button onClick={saveAll} className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
-          <Check size={14} /> Save Requirements
-        </button>
+        <p className="text-sm text-gray-500">
+          Define shell structure templates per section. These apply to all shells in that section.
+        </p>
+        <div className="flex items-center gap-3">
+          {saveState === "saving" && (
+            <span className="text-xs text-gray-400 flex items-center gap-1">
+              <Loader2 size={11} className="animate-spin" /> Saving…
+            </span>
+          )}
+          {saveState === "saved" && (
+            <span className="text-xs text-green-600 flex items-center gap-1">
+              <Check size={11} /> Saved
+            </span>
+          )}
+          {saveState === "error" && (
+            <span className="text-xs text-red-500 flex items-center gap-1">
+              <AlertCircle size={11} /> Save failed
+            </span>
+          )}
+          <button
+            onClick={saveAll}
+            disabled={saveState === "saving" || !studyId}
+            className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-60"
+          >
+            <Save size={14} /> Save Requirements
+          </button>
+        </div>
       </div>
 
+      {/* Save error banner */}
+      {saveError && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-sm px-4 py-3 rounded-lg">
+          <AlertCircle size={16} className="flex-shrink-0" />
+          <span className="flex-1">{saveError}</span>
+          <button onClick={() => setSaveError(null)} className="text-red-400 hover:text-red-600">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {sections.length === 0 && (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-10 text-center">
+          <Settings size={28} className="mx-auto text-gray-300 mb-3" />
+          <p className="text-gray-500 font-medium mb-1">No section requirements yet</p>
+          <p className="text-gray-400 text-sm">Add a section below to define shell structure defaults.</p>
+        </div>
+      )}
+
+      {/* Section cards */}
       {sections.map((section) => (
         <div key={section.id} className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Settings size={16} className="text-indigo-500" />
-              <span className="font-semibold text-gray-800">{section.name}</span>
+              <input
+                value={section.name}
+                onChange={(e) => updateSection(section.id, "name", e.target.value)}
+                className="font-semibold text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-indigo-400 outline-none px-0.5 py-0.5 text-sm"
+                placeholder="Section name"
+              />
             </div>
-            <button onClick={() => removeSection(section.id)} className="p-1.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition">
+            <button
+              onClick={() => removeSection(section.id)}
+              className="p-1.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition"
+            >
               <X size={14} />
             </button>
           </div>
@@ -777,7 +970,10 @@ function GlobalRequirementsTab() {
                       className="text-xs bg-transparent border-none outline-none w-28 text-gray-700"
                     />
                     {section.columns.length > 1 && (
-                      <button onClick={() => removeColumn(section.id, idx)} className="text-gray-400 hover:text-red-500 transition">
+                      <button
+                        onClick={() => removeColumn(section.id, idx)}
+                        className="text-gray-400 hover:text-red-500 transition"
+                      >
                         <X size={10} />
                       </button>
                     )}
@@ -800,7 +996,12 @@ function GlobalRequirementsTab() {
                   <thead>
                     <tr className="bg-gray-50">
                       {section.columns.map((col, i) => (
-                        <th key={i} className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">{col}</th>
+                        <th
+                          key={i}
+                          className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap"
+                        >
+                          {col}
+                        </th>
                       ))}
                     </tr>
                   </thead>
@@ -809,7 +1010,9 @@ function GlobalRequirementsTab() {
                       <tr key={ri} className={ri % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
                         <td className="px-3 py-1.5 text-gray-600 italic">{row}</td>
                         {section.columns.slice(1).map((_, ci) => (
-                          <td key={ci} className="px-3 py-1.5 text-gray-400 text-center">—</td>
+                          <td key={ci} className="px-3 py-1.5 text-gray-400 text-center">
+                            —
+                          </td>
                         ))}
                       </tr>
                     ))}
@@ -818,8 +1021,8 @@ function GlobalRequirementsTab() {
               </div>
               <p className="text-xs text-gray-400 mt-1 italic">
                 Title preview:{" "}
-                {section.titleTemplate
-                  .replace("{number}", section.numberPattern)
+                {(section.titleTemplate || "")
+                  .replace("{number}", section.numberPattern || "x")
                   .replace("{title}", `[${section.name} Table Title]`)
                   .replace("{population}", "Safety Analysis Set")}
               </p>
@@ -828,6 +1031,7 @@ function GlobalRequirementsTab() {
         </div>
       ))}
 
+      {/* Add section */}
       <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-4">
         <div className="flex gap-3 items-center">
           <input
@@ -1774,7 +1978,16 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
               <TLFTab studyId={backendStudyId || studyId} />
             )
           )}
-          {activeTab === "global" && <GlobalRequirementsTab />}
+          {activeTab === "global" && (
+            studyBootstrapping ? (
+              <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+                <Loader2 size={20} className="animate-spin" />
+                <span className="text-sm">Connecting to study…</span>
+              </div>
+            ) : (
+              <GlobalRequirementsTab studyId={backendStudyId || studyId} />
+            )
+          )}
           {activeTab === "shells" && (
             studyBootstrapping ? (
               <div className="flex items-center justify-center h-64 text-gray-400 gap-2">

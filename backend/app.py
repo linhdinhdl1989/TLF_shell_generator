@@ -114,11 +114,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the React dev server (and any local origin) to call the API.
-# Restrict CORS_ORIGINS in production via environment variable.
-_ALLOWED_ORIGINS: List[str] = os.getenv(
-    "CORS_ORIGINS", "http://localhost:3000,http://localhost:5000,http://localhost:5173"
-).split(",")
+# Allow origins from environment or default dev ports
+_raw_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:5000,http://localhost:5173"
+)
+_ALLOWED_ORIGINS: List[str] = [origin.strip() for origin in _raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,

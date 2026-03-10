@@ -22,6 +22,11 @@ import {
   GripVertical,
   Save,
   Sparkles,
+  History,
+  ChevronDown,
+  Clock,
+  User,
+  Cpu,
 } from "lucide-react";
 
 // ─── API base ─────────────────────────────────────────────────────────────────
@@ -96,6 +101,136 @@ function Badge({ label, colorClass }) {
     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${colorClass}`}>
       {label}
     </span>
+  );
+}
+
+// ─── Audit / History helpers ──────────────────────────────────────────────────
+
+const SOURCE_BADGE = {
+  ai:      { label: "AI",      cls: "bg-purple-100 text-purple-700" },
+  user:    { label: "User",    cls: "bg-blue-100 text-blue-700" },
+  backend: { label: "System",  cls: "bg-gray-100 text-gray-500" },
+};
+
+const ENTITY_COLORS = {
+  shell:               "text-indigo-600",
+  tlf_list:            "text-emerald-600",
+  global_requirements: "text-amber-600",
+  document:            "text-sky-600",
+  chat:                "text-violet-600",
+  study:               "text-gray-500",
+};
+
+function formatAuditTime(isoString) {
+  if (!isoString) return "";
+  try {
+    const d = new Date(isoString);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHr = Math.floor(diffMs / 3600000);
+    const diffDay = Math.floor(diffMs / 86400000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin}m ago`;
+    if (diffHr < 24) return `${diffHr}h ago`;
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return d.toLocaleDateString();
+  } catch {
+    return isoString;
+  }
+}
+
+/**
+ * AuditEventPanel – reusable panel that shows a list of audit events.
+ * Used both for study-level and shell-level history.
+ */
+function AuditEventPanel({ events, loading, error, onRefresh, compact = false }) {
+  const [expanded, setExpanded] = useState(null);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-6 text-gray-400">
+        <Loader2 size={14} className="animate-spin" />
+        <span className="text-xs">Loading history…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-start gap-2 py-3 px-2 text-xs text-red-500">
+        <AlertCircle size={13} className="flex-shrink-0 mt-0.5" />
+        <span>Could not load history: {error}</span>
+        {onRefresh && (
+          <button onClick={onRefresh} className="ml-auto underline text-gray-500 hover:text-gray-700 flex-shrink-0">
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!events || events.length === 0) {
+    return (
+      <div className="py-6 text-center text-xs text-gray-400 italic">
+        No history recorded yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className={compact ? "space-y-0.5" : "space-y-1"}>
+      {events.map((ev) => {
+        const badge = SOURCE_BADGE[ev.source] || SOURCE_BADGE.user;
+        const entityColor = ENTITY_COLORS[ev.entity_type] || "text-gray-500";
+        const isExpanded = expanded === ev.id;
+        const hasDetails = ev.details && Object.keys(ev.details).length > 0;
+
+        return (
+          <div
+            key={ev.id}
+            className={`rounded-lg border border-gray-100 ${compact ? "px-3 py-2" : "px-3 py-2.5"} bg-white hover:bg-gray-50 transition`}
+          >
+            <div className="flex items-start gap-2">
+              {/* Source badge */}
+              <span className={`text-xs font-medium px-1.5 py-0.5 rounded flex-shrink-0 ${badge.cls}`}>
+                {badge.label}
+              </span>
+
+              {/* Summary + entity */}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-gray-700 leading-snug truncate">{ev.summary}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className={`text-xs font-medium ${entityColor}`}>{ev.entity_type}</span>
+                  <span className="text-gray-300 text-xs">·</span>
+                  <span className="text-xs text-gray-400" title={ev.created_at}>
+                    {formatAuditTime(ev.created_at)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Expand toggle for details */}
+              {hasDetails && (
+                <button
+                  onClick={() => setExpanded(isExpanded ? null : ev.id)}
+                  className="flex-shrink-0 text-gray-300 hover:text-gray-500 transition"
+                  title={isExpanded ? "Collapse details" : "Expand details"}
+                >
+                  <ChevronDown size={13} className={`transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+                </button>
+              )}
+            </div>
+
+            {/* Expandable details */}
+            {isExpanded && hasDetails && (
+              <pre className="mt-2 text-xs text-gray-500 bg-gray-50 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all">
+                {JSON.stringify(ev.details, null, 2)}
+              </pre>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1075,6 +1210,12 @@ function AIShellsTab({ studyId, studyName }) {
   const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(false);
   const [chatHistoryError, setChatHistoryError] = useState(null);
 
+  // ── Shell audit history ──
+  const [showShellHistory, setShowShellHistory] = useState(false);
+  const [shellAuditEvents, setShellAuditEvents] = useState([]);
+  const [shellAuditLoading, setShellAuditLoading] = useState(false);
+  const [shellAuditError, setShellAuditError] = useState(null);
+
   const chatEndRef = useRef(null);
   const saveTimerRef = useRef(null);
 
@@ -1258,6 +1399,35 @@ function AIShellsTab({ studyId, studyName }) {
       setTimeout(() => setShellsError(null), 4000);
     }
   };
+
+  // ── Fetch shell audit events ──
+  const fetchShellAuditEvents = useCallback(
+    async (shellId) => {
+      if (!shellId) return;
+      setShellAuditLoading(true);
+      setShellAuditError(null);
+      try {
+        const r = await fetch(
+          `${API_BASE}/studies/${studyId}/shells/${shellId}/audit-events?limit=30`
+        );
+        if (!r.ok) throw new Error(`History error ${r.status}`);
+        const data = await r.json();
+        setShellAuditEvents(data.events || []);
+      } catch (err) {
+        setShellAuditError(err.message || "Failed to load history");
+      } finally {
+        setShellAuditLoading(false);
+      }
+    },
+    [studyId]
+  );
+
+  // Reload shell audit events when selected shell changes or panel is opened
+  useEffect(() => {
+    if (showShellHistory && selectedId) {
+      fetchShellAuditEvents(selectedId);
+    }
+  }, [showShellHistory, selectedId, fetchShellAuditEvents]);
 
   // ── Refresh chat history from backend (canonical source of truth) ──
   const refreshChatHistory = useCallback(
@@ -1782,6 +1952,50 @@ function AIShellsTab({ studyId, studyName }) {
                 </button>
               </div>
             </div>
+
+            {/* ── Shell Audit History (collapsible) ── */}
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex-shrink-0">
+              <button
+                onClick={() => {
+                  const next = !showShellHistory;
+                  setShowShellHistory(next);
+                  if (next && selectedId) fetchShellAuditEvents(selectedId);
+                }}
+                className="w-full px-4 py-2.5 flex items-center justify-between text-sm text-gray-600 hover:bg-gray-50 transition"
+              >
+                <span className="flex items-center gap-2 font-medium">
+                  <History size={14} className="text-indigo-500" />
+                  Shell History
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`transition-transform text-gray-400 ${showShellHistory ? "rotate-180" : ""}`}
+                />
+              </button>
+              {showShellHistory && (
+                <div className="px-3 pb-3 border-t border-gray-100">
+                  <div className="flex items-center justify-between py-2">
+                    <span className="text-xs text-gray-400">Recent events for this shell</span>
+                    <button
+                      onClick={() => fetchShellAuditEvents(selectedId)}
+                      className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1"
+                      title="Refresh"
+                    >
+                      <RefreshCw size={11} />
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    <AuditEventPanel
+                      events={shellAuditEvents}
+                      loading={shellAuditLoading}
+                      error={shellAuditError}
+                      onRefresh={() => fetchShellAuditEvents(selectedId)}
+                      compact
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : (
@@ -1823,6 +2037,12 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
   const [backendStudyId, setBackendStudyId] = useState(null);
   const [studyBootstrapping, setStudyBootstrapping] = useState(true);
 
+  // ── Study-level audit trail ──
+  const [showStudyAudit, setShowStudyAudit] = useState(false);
+  const [studyAuditEvents, setStudyAuditEvents] = useState([]);
+  const [studyAuditLoading, setStudyAuditLoading] = useState(false);
+  const [studyAuditError, setStudyAuditError] = useState(null);
+
   useEffect(() => {
     const name = studyName || studyId;
     const bootstrap = async () => {
@@ -1854,6 +2074,32 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
     };
     bootstrap();
   }, [studyId, studyName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fetch study-level audit events ──
+  const fetchStudyAuditEvents = useCallback(
+    async (sid) => {
+      if (!sid) return;
+      setStudyAuditLoading(true);
+      setStudyAuditError(null);
+      try {
+        const r = await fetch(`${API_BASE}/studies/${sid}/audit-events?limit=50`);
+        if (!r.ok) throw new Error(`History error ${r.status}`);
+        const data = await r.json();
+        setStudyAuditEvents(data.events || []);
+      } catch (err) {
+        setStudyAuditError(err.message || "Failed to load history");
+      } finally {
+        setStudyAuditLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (showStudyAudit && backendStudyId) {
+      fetchStudyAuditEvents(backendStudyId);
+    }
+  }, [showStudyAudit, backendStudyId, fetchStudyAuditEvents]);
 
   const saveRequirements = () => {
     console.log("Study requirements saved:", { studyId, description, globalReqText });
@@ -1938,12 +2184,31 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
               </button>
             </div>
           ) : (
-            <button
-              onClick={() => setShowGlobalReqPanel(true)}
-              className="self-start flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-indigo-700 transition shadow-sm"
-            >
-              <Settings size={14} /> Save Requirements
-            </button>
+            <div className="flex items-center gap-2 self-start flex-wrap">
+              <button
+                onClick={() => setShowGlobalReqPanel(true)}
+                className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-indigo-700 transition shadow-sm"
+              >
+                <Settings size={14} /> Save Requirements
+              </button>
+              {!studyBootstrapping && (
+                <button
+                  onClick={() => {
+                    const next = !showStudyAudit;
+                    setShowStudyAudit(next);
+                    if (next && backendStudyId) fetchStudyAuditEvents(backendStudyId);
+                  }}
+                  className={`flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-lg transition shadow-sm border ${
+                    showStudyAudit
+                      ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                      : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                  }`}
+                  title="View audit trail"
+                >
+                  <History size={14} /> Audit Trail
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -1999,6 +2264,43 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
             )
           )}
         </div>
+
+        {/* ── Study Audit Trail Panel ── */}
+        {showStudyAudit && (
+          <div className="mt-6 bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <History size={16} className="text-indigo-500" />
+                <span className="font-semibold text-gray-800 text-sm">Study Audit Trail</span>
+                <span className="text-xs text-gray-400">
+                  — recent actions, newest first
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fetchStudyAuditEvents(backendStudyId)}
+                  className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 px-2 py-1 rounded hover:bg-indigo-50 transition"
+                >
+                  <RefreshCw size={11} /> Refresh
+                </button>
+                <button
+                  onClick={() => setShowStudyAudit(false)}
+                  className="text-gray-400 hover:text-gray-600 transition"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <div className="p-4 max-h-96 overflow-y-auto">
+              <AuditEventPanel
+                events={studyAuditEvents}
+                loading={studyAuditLoading}
+                error={studyAuditError}
+                onRefresh={() => fetchStudyAuditEvents(backendStudyId)}
+              />
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

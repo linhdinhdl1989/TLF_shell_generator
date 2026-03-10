@@ -65,6 +65,8 @@ from schemas import (
     ActionCreate,
     ActionList,
     ActionRead,
+    AuditEventList,
+    AuditEventRead,
     ChatRequest,
     ChatResponse,
     DocumentList,
@@ -173,6 +175,9 @@ async def _log_action(
     actor: str = "user",
 ) -> Action:
     """Create an Action (audit trail) row inside the current session."""
+    # Pre-compute enriched fields so they're stored and queryable
+    entity_type = _derive_entity_type(action_type, target, shell_id, tlf_id)
+    summary = _compute_action_summary(action_type, target, after or {}, before or {})
     entry = Action(
         id=str(uuid.uuid4()),
         study_id=study_id,
@@ -184,9 +189,158 @@ async def _log_action(
         after_state=after,
         actor=actor,
         timestamp=datetime.utcnow(),
+        summary=summary,
+        entity_type=entity_type,
     )
     db.add(entry)
     return entry
+
+
+def _derive_entity_type(
+    action_type: str,
+    target: Optional[str],
+    shell_id: Optional[str],
+    tlf_id: Optional[str],
+) -> str:
+    """Compute entity_type for an audit event from available context."""
+    if action_type in (
+        "shell_created", "update_title", "update_subtitle", "update_population",
+        "update_column", "update_row", "update_footnote", "update_status",
+        "approve_shell", "reject_shell", "ai_reviewer_correction",
+    ) and shell_id:
+        return "shell"
+    if shell_id:
+        return "shell"
+    if action_type in ("tlf_list_saved", "tlf_list_extracted", "tlf_list_approved"):
+        return "tlf_list"
+    if action_type in ("add_row", "delete_row", "update_row", "reorder_rows") or target == "tlf_list":
+        return "tlf_list"
+    if action_type == "global_reqs_saved" or target == "global_requirements":
+        return "global_requirements"
+    if action_type == "document_uploaded":
+        return "document"
+    if action_type == "chat_sent":
+        return "chat"
+    if tlf_id:
+        return "tlf_list"
+    return "study"
+
+
+def _compute_action_summary(
+    action_type: str,
+    target: Optional[str],
+    after: dict,
+    before: dict,
+) -> str:
+    """Generate a concise, human-readable summary for display in the audit trail."""
+    t = target or ""
+    if action_type == "shell_created":
+        title = after.get("title", "New Shell")
+        return f'Shell created: "{title}"'
+    if action_type in ("tlf_list_saved", "reorder_rows"):
+        tlfs = after.get("tlfs", [])
+        count = len(tlfs) if isinstance(tlfs, list) else after.get("count", "?")
+        return f"TLF list saved ({count} entries)"
+    if action_type == "tlf_list_extracted":
+        return f"TLF list extracted by AI ({after.get('extracted_count', '?')} entries)"
+    if action_type == "tlf_list_approved":
+        return f"TLF list approved ({after.get('count', '?')} entries)"
+    if action_type == "global_reqs_saved":
+        return f"Global requirements saved ({after.get('count', '?')} sections)"
+    if action_type == "document_uploaded":
+        name = after.get("name", "")
+        doc_type = after.get("type", "")
+        return f"Document uploaded: {name}" + (f" ({doc_type})" if doc_type else "")
+    if action_type == "chat_sent":
+        prompt = after.get("prompt", t)
+        short = str(prompt)[:60]
+        return f'Chat sent: "{short}"' + ("…" if len(str(prompt)) > 60 else "")
+    if action_type == "add_row":
+        title = after.get("title", after.get("number", ""))
+        return f"TLF entry added: {title}" if title else "TLF entry added"
+    if action_type == "delete_row":
+        title = before.get("title", before.get("number", ""))
+        return f"TLF entry deleted: {title}" if title else "TLF entry deleted"
+    if action_type == "update_row":
+        if t.startswith("tlf:"):
+            return f"TLF entry updated: {t[4:]}"
+        return "Shell rows updated"
+    if action_type == "update_title":
+        val = str(after.get("title", ""))[:50]
+        return f'Shell title updated: "{val}"'
+    if action_type == "update_subtitle":
+        return "Shell subtitle updated"
+    if action_type == "update_population":
+        val = after.get("population", "")
+        return f"Shell population: {val}" if val else "Shell population updated"
+    if action_type == "update_column":
+        return "Shell columns updated"
+    if action_type == "update_footnote":
+        return "Shell footnotes updated"
+    if action_type == "update_status":
+        new_status = after.get("status", "")
+        if t == "tlf_list":
+            return f"TLF list status changed to {new_status}" if new_status else "TLF list status updated"
+        return f"Shell status changed to {new_status}" if new_status else "Shell status updated"
+    if action_type == "approve_shell":
+        return "Shell approved"
+    if action_type == "reject_shell":
+        return "Shell deleted"
+    if action_type == "ai_suggestion":
+        if t == "tlf_list":
+            return f"TLF list extracted by AI ({after.get('extracted_count', '?')} entries)"
+        if t == "shell":
+            return f'Shell created by AI: "{after.get("title", "New Shell")}"'
+        return "AI suggestion applied"
+    if action_type == "ai_variable_flagged":
+        return "AI flagged variable"
+    if action_type == "ai_reviewer_correction":
+        return "AI reviewer correction"
+    if action_type == "add_column":
+        return "Column added"
+    if action_type == "delete_column":
+        return "Column removed"
+    # Generic fallback
+    return action_type.replace("_", " ").title()
+
+
+def _action_to_event(action: Action) -> AuditEventRead:
+    """Convert a stored Action row into an enriched AuditEventRead."""
+    after = action.after_state or {}
+    before = action.before_state or {}
+
+    entity_type = action.entity_type or _derive_entity_type(
+        action.type, action.target, action.shell_id, action.tlf_id
+    )
+    summary = action.summary or _compute_action_summary(
+        action.type, action.target, after, before
+    )
+
+    # Determine entity_id
+    entity_id: Optional[str] = None
+    if entity_type == "shell":
+        entity_id = action.shell_id
+    elif entity_type in ("tlf_list",):
+        entity_id = action.tlf_id
+    elif entity_type == "document":
+        entity_id = after.get("doc_id")
+
+    source = "ai" if action.actor == "ai" else "user"
+
+    return AuditEventRead(
+        id=action.id,
+        study_id=action.study_id,
+        shell_id=action.shell_id,
+        tlf_id=action.tlf_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action=action.type,
+        summary=summary,
+        details=after if after else (before if before else None),
+        actor=action.actor,
+        source=source,
+        created_at=action.timestamp,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +526,14 @@ async def upload_document(
     await db.flush()
     await db.refresh(doc)
 
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="document_uploaded",
+        target=f"document:{doc.id}",
+        after={"name": doc.name, "type": doc.type, "doc_id": doc.id, "file_size": doc.file_size},
+    )
+
     # Fire-and-forget parse pipeline (stub)
     background_tasks.add_task(_parse_document_stub, doc.id)
 
@@ -556,7 +718,7 @@ async def bulk_replace_tlf_list(
     await _log_action(
         db,
         study_id=study_id,
-        action_type="reorder_rows",
+        action_type="tlf_list_saved",
         target="tlf_list",
         before={"tlfs": before_tlfs},
         after={"tlfs": after_tlfs},
@@ -706,7 +868,7 @@ async def extract_tlf_list(
     await _log_action(
         db,
         study_id=study_id,
-        action_type="ai_suggestion",
+        action_type="tlf_list_extracted",
         target="tlf_list",
         after={"extracted_count": len(new_tlfs), "source": source},
         actor="ai",
@@ -751,7 +913,7 @@ async def approve_tlf_list(
     await _log_action(
         db,
         study_id=study_id,
-        action_type="update_status",
+        action_type="tlf_list_approved",
         target="tlf_list",
         after={"status": "approved", "count": len(tlfs)},
     )
@@ -893,6 +1055,17 @@ async def bulk_replace_global_requirements(
         db.add(req)
         new_reqs.append(req)
 
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="global_reqs_saved",
+        target="global_requirements",
+        after={
+            "count": len(new_reqs),
+            "sections": [r.section_type for r in new_reqs],
+        },
+    )
+
     await db.flush()
     for req in new_reqs:
         await db.refresh(req)
@@ -1024,12 +1197,11 @@ async def create_shell(
     await _log_action(
         db,
         study_id=study_id,
-        action_type="ai_suggestion",
+        action_type="shell_created",
         tlf_id=body.tlf_id,
         shell_id=shell.id,
         target="shell",
-        after={"title": shell.title, "status": shell.status},
-        actor="ai",
+        after={"title": shell.title, "type": shell.type, "status": shell.status},
     )
 
     await db.flush()
@@ -1212,6 +1384,21 @@ async def post_chat(
     )
     db.add(user_msg)
 
+    # Log audit event for chat interaction
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="chat_sent",
+        shell_id=resolved_shell_id,
+        tlf_id=resolved_tlf_id,
+        target=body.target or "study",
+        after={
+            "prompt": body.prompt,
+            "shell_id": resolved_shell_id,
+            "target": body.target,
+        },
+    )
+
     # --- AI stub -------------------------------------------------------
     # Real implementation: retrieve top-k chunks from parsed documents,
     # run multi-role AI loop, return structured shell update + explanation.
@@ -1312,6 +1499,91 @@ async def get_shell_messages(
     result = await db.execute(stmt)
     rows = result.scalars().all()
     return MessageList(messages=list(rows), total=len(rows))
+
+
+# ===========================================================================
+# Audit Events  (enriched audit trail for UI history panels)
+# ===========================================================================
+
+@app.get(
+    "/studies/{study_id}/audit-events",
+    response_model=AuditEventList,
+    tags=["Audit"],
+    summary="Get enriched study-level audit events for the UI history panel",
+)
+async def get_audit_events(
+    study_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/audit-events
+
+    Returns study-level audit events newest-first with human-readable summaries,
+    entity type labels, and source badges.  Intended for the UI audit history panel.
+    """
+    await _get_study(study_id, db)
+
+    # Total count
+    count_result = await db.execute(
+        select(func.count(Action.id)).where(Action.study_id == study_id)
+    )
+    total = count_result.scalar_one()
+
+    stmt = (
+        select(Action)
+        .where(Action.study_id == study_id)
+        .order_by(Action.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    events = [_action_to_event(a) for a in rows]
+    return AuditEventList(events=events, total=total)
+
+
+@app.get(
+    "/studies/{study_id}/shells/{shell_id}/audit-events",
+    response_model=AuditEventList,
+    tags=["Audit"],
+    summary="Get enriched shell-level audit events for the shell history panel",
+)
+async def get_shell_audit_events(
+    study_id: str,
+    shell_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/shells/{shell_id}/audit-events
+
+    Returns shell-specific audit events newest-first.
+    Includes shell edits, status changes, chat interactions, and AI suggestions.
+    """
+    await _get_shell(study_id, shell_id, db)
+
+    count_result = await db.execute(
+        select(func.count(Action.id))
+        .where(Action.study_id == study_id)
+        .where(Action.shell_id == shell_id)
+    )
+    total = count_result.scalar_one()
+
+    stmt = (
+        select(Action)
+        .where(Action.study_id == study_id)
+        .where(Action.shell_id == shell_id)
+        .order_by(Action.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    events = [_action_to_event(a) for a in rows]
+    return AuditEventList(events=events, total=total)
 
 
 # ===========================================================================

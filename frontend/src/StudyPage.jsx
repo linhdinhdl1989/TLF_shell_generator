@@ -611,7 +611,7 @@ function GlobalRequirementsTab() {
 
 // ─── Tab 4: AI Shells (backend-wired) ────────────────────────────────────────
 
-function AIShellsTab({ studyId }) {
+function AIShellsTab({ studyId, studyName }) {
   // ── State ──
   const [shells, setShells] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -626,15 +626,17 @@ function AIShellsTab({ studyId }) {
   const [chatInput, setChatInput] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [chatError, setChatError] = useState(null);
+  // null = not yet fetched for this shell, [] = fetched but empty, [...] = loaded
+  const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(false);
+  const [chatHistoryError, setChatHistoryError] = useState(null);
 
   const chatEndRef = useRef(null);
   const saveTimerRef = useRef(null);
 
   // ── Derived ──
   const activeShell = useMemo(() => shells.find((s) => s.id === selectedId) || null, [shells, selectedId]);
-  const chatMessages = chatByShellId[selectedId] || [
-    { role: "assistant", text: "Shell editor ready. Ask me to refine the title, suggest rows, add footnotes, or update the population." },
-  ];
+  // null means not yet loaded from backend for this shell
+  const chatMessages = selectedId != null ? (chatByShellId[selectedId] ?? null) : null;
 
   // ── Load shells on mount ──
   useEffect(() => {
@@ -644,6 +646,8 @@ function AIShellsTab({ studyId }) {
 
     fetch(`${API_BASE}/studies/${studyId}/shells`)
       .then((r) => {
+        if (r.status === 404)
+          throw new Error(`Study not found in backend (id: ${studyId}). Check the studyId prop mapping.`);
         if (!r.ok) throw new Error(`Server error ${r.status}`);
         return r.json();
       })
@@ -662,6 +666,38 @@ function AIShellsTab({ studyId }) {
 
     return () => { cancelled = true; };
   }, [studyId]);
+
+  // ── Fetch chat history when selected shell changes ──
+  useEffect(() => {
+    if (!selectedId) return;
+    // Skip fetch if we already have history for this shell in memory
+    if (chatByShellId[selectedId] !== undefined) return;
+
+    let cancelled = false;
+    setIsChatHistoryLoading(true);
+    setChatHistoryError(null);
+
+    fetch(`${API_BASE}/studies/${studyId}/shells/${selectedId}/messages`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Messages error ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const msgs = Array.isArray(data) ? data : [];
+        setChatByShellId((prev) => ({ ...prev, [selectedId]: msgs }));
+        setIsChatHistoryLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setChatHistoryError(err.message || "Failed to load messages");
+        // Seed with empty so we still allow the user to chat
+        setChatByShellId((prev) => ({ ...prev, [selectedId]: [] }));
+        setIsChatHistoryLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [studyId, selectedId]); // chatByShellId intentionally omitted — skip-if-loaded guard is non-reactive
 
   // ── Scroll chat to bottom on new messages ──
   useEffect(() => {
@@ -776,6 +812,22 @@ function AIShellsTab({ studyId }) {
     }
   };
 
+  // ── Refresh chat history from backend (canonical source of truth) ──
+  const refreshChatHistory = useCallback(
+    async (shellId) => {
+      try {
+        const r = await fetch(`${API_BASE}/studies/${studyId}/shells/${shellId}/messages`);
+        if (!r.ok) throw new Error(`Messages error ${r.status}`);
+        const data = await r.json();
+        const msgs = Array.isArray(data) ? data : [];
+        setChatByShellId((prev) => ({ ...prev, [shellId]: msgs }));
+      } catch {
+        // Silently keep whatever is already in local state on refresh failure
+      }
+    },
+    [studyId]
+  );
+
   // ── AI actions via backend chat ──
   const handleAiAction = useCallback(
     async (actionType, customPrompt) => {
@@ -790,10 +842,15 @@ function AIShellsTab({ studyId }) {
 
       if (!prompt.trim()) return;
 
-      const userMsg = { role: "user", text: actionType === "refine_title" ? "Refine title" : actionType === "suggest_rows" ? "Suggest rows" : prompt };
+      // Optimistic: append user message immediately for responsiveness
+      const userText =
+        actionType === "refine_title" ? "Refine title"
+        : actionType === "suggest_rows" ? "Suggest rows"
+        : prompt;
+      const userMsg = { role: "user", text: userText };
       setChatByShellId((prev) => ({
         ...prev,
-        [selectedId]: [...(prev[selectedId] || [chatMessages[0]]), userMsg],
+        [selectedId]: [...(prev[selectedId] || []), userMsg],
       }));
       setChatInput("");
       setChatError(null);
@@ -807,22 +864,21 @@ function AIShellsTab({ studyId }) {
         });
         if (!r.ok) throw new Error(`Chat error (${r.status})`);
         const data = await r.json();
-        const aiMsg = { role: "assistant", text: data.text || data.message || "Done." };
-        setChatByShellId((prev) => ({
-          ...prev,
-          [selectedId]: [...(prev[selectedId] || [chatMessages[0]]), userMsg, aiMsg],
-        }));
+
         // If action type was refine_title and response looks like a title, apply it
         if (actionType === "refine_title" && data.text && data.text.length < 200) {
           updateActiveShell({ title: data.text.replace(/^["']|["']$/g, "").trim() });
         }
+
+        // Refresh from backend — backend is the source of truth for chat history
+        await refreshChatHistory(selectedId);
       } catch (err) {
         setChatError(err.message || "Chat request failed");
+        // Append a local error reply so the user sees feedback even without a backend refresh
         setChatByShellId((prev) => ({
           ...prev,
           [selectedId]: [
-            ...(prev[selectedId] || [chatMessages[0]]),
-            userMsg,
+            ...(prev[selectedId] || []),
             { role: "assistant", text: "Sorry, I couldn't reach the AI assistant. Please try again." },
           ],
         }));
@@ -830,7 +886,7 @@ function AIShellsTab({ studyId }) {
         setIsChatLoading(false);
       }
     },
-    [activeShell, isChatLoading, selectedId, studyId, chatMessages, updateActiveShell]
+    [activeShell, isChatLoading, selectedId, studyId, updateActiveShell, refreshChatHistory]
   );
 
   const sendChat = () => {
@@ -845,7 +901,7 @@ function AIShellsTab({ studyId }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `shells_study_${studyId}.json`;
+    a.download = `shells_study_${studyName || studyId}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1051,7 +1107,7 @@ function AIShellsTab({ studyId }) {
                 <div className="flex gap-2">
                   <button
                     onClick={() => handleAiAction("suggest_rows")}
-                    disabled={isChatLoading}
+                    disabled={isChatLoading || isChatHistoryLoading}
                     className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium border border-indigo-200 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition disabled:opacity-50"
                   >
                     <Sparkles size={11} /> AI Suggestions
@@ -1198,14 +1254,14 @@ function AIShellsTab({ studyId }) {
               <div className="px-3 pt-2 pb-1 flex gap-2 flex-wrap border-b border-gray-50">
                 <button
                   onClick={() => handleAiAction("refine_title")}
-                  disabled={isChatLoading}
+                  disabled={isChatLoading || isChatHistoryLoading}
                   className="text-xs border border-indigo-200 text-indigo-600 px-2.5 py-1 rounded-full hover:bg-indigo-50 transition disabled:opacity-50 font-medium"
                 >
                   Refine Title
                 </button>
                 <button
                   onClick={() => handleAiAction("suggest_rows")}
-                  disabled={isChatLoading}
+                  disabled={isChatLoading || isChatHistoryLoading}
                   className="text-xs border border-indigo-200 text-indigo-600 px-2.5 py-1 rounded-full hover:bg-indigo-50 transition disabled:opacity-50 font-medium"
                 >
                   Suggest Rows
@@ -1214,19 +1270,35 @@ function AIShellsTab({ studyId }) {
 
               {/* Chat history */}
               <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2 min-h-[160px] max-h-64">
-                {chatMessages.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[85%] text-xs px-3 py-2 rounded-xl leading-relaxed ${
-                        msg.role === "user"
-                          ? "bg-indigo-600 text-white rounded-br-none"
-                          : "bg-gray-100 text-gray-700 rounded-bl-none"
-                      }`}
-                    >
-                      {msg.text}
-                    </div>
+                {isChatHistoryLoading ? (
+                  <div className="flex items-center justify-center h-full py-6 gap-2 text-gray-400">
+                    <Loader2 size={14} className="animate-spin" />
+                    <span className="text-xs">Loading history…</span>
                   </div>
-                ))}
+                ) : chatHistoryError ? (
+                  <div className="flex items-start gap-1.5 text-xs text-red-500 px-1 py-2">
+                    <AlertCircle size={11} className="mt-0.5 flex-shrink-0" />
+                    <span>{chatHistoryError}</span>
+                  </div>
+                ) : chatMessages !== null && chatMessages.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic text-center py-4">
+                    No messages yet. Ask me something below.
+                  </p>
+                ) : (
+                  (chatMessages || []).map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className={`max-w-[85%] text-xs px-3 py-2 rounded-xl leading-relaxed ${
+                          msg.role === "user"
+                            ? "bg-indigo-600 text-white rounded-br-none"
+                            : "bg-gray-100 text-gray-700 rounded-bl-none"
+                        }`}
+                      >
+                        {msg.text}
+                      </div>
+                    </div>
+                  ))
+                )}
                 {isChatLoading && (
                   <div className="flex justify-start">
                     <div className="bg-gray-100 text-gray-400 text-xs px-3 py-2 rounded-xl rounded-bl-none flex items-center gap-1.5">
@@ -1249,12 +1321,12 @@ function AIShellsTab({ studyId }) {
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChat()}
                   placeholder="Ask about this shell…"
-                  disabled={isChatLoading}
+                  disabled={isChatLoading || isChatHistoryLoading}
                   className="flex-1 text-xs border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50"
                 />
                 <button
                   onClick={sendChat}
-                  disabled={!chatInput.trim() || isChatLoading}
+                  disabled={!chatInput.trim() || isChatLoading || isChatHistoryLoading}
                   className="bg-indigo-600 text-white px-2.5 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 flex-shrink-0"
                 >
                   <Send size={13} />
@@ -1292,7 +1364,7 @@ const TABS = [
   { id: "shells", label: "AI Shells", icon: Layers },
 ];
 
-export default function StudyPage({ studyId = "XYZ-101" }) {
+export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
   const [activeTab, setActiveTab] = useState("documents");
   const [description, setDescription] = useState("Phase 3 clinical trial for a new hypertension medication.");
   const [showGlobalReqPanel, setShowGlobalReqPanel] = useState(false);
@@ -1343,13 +1415,13 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
             <ArrowLeft size={13} /> Studies
           </button>
           <span>/</span>
-          <span className="text-gray-700 font-medium">Study {studyId}</span>
+          <span className="text-gray-700 font-medium">Study {studyName}</span>
         </div>
 
         {/* ── Study Header ── */}
         <div className="flex flex-col md:flex-row gap-6 mb-6">
           <div className="flex-1">
-            <h1 className="text-3xl font-black text-gray-900 mb-2">Study {studyId}</h1>
+            <h1 className="text-3xl font-black text-gray-900 mb-2">Study {studyName}</h1>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -1413,7 +1485,7 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
           {activeTab === "documents" && <DocumentsTab />}
           {activeTab === "tlf" && <TLFTab />}
           {activeTab === "global" && <GlobalRequirementsTab />}
-          {activeTab === "shells" && <AIShellsTab studyId={studyId} />}
+          {activeTab === "shells" && <AIShellsTab studyId={studyId} studyName={studyName} />}
         </div>
       </main>
     </div>

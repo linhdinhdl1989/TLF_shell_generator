@@ -653,7 +653,8 @@ function AIShellsTab({ studyId, studyName }) {
       })
       .then((data) => {
         if (cancelled) return;
-        const list = Array.isArray(data) ? data : [];
+        // Backend returns ShellList: {shells: [...], total: N}
+        const list = data.shells ? data.shells : Array.isArray(data) ? data : [];
         setShells(list);
         if (list.length > 0) setSelectedId(list[0].id);
         setLoadingShells(false);
@@ -684,7 +685,8 @@ function AIShellsTab({ studyId, studyName }) {
       })
       .then((data) => {
         if (cancelled) return;
-        const msgs = Array.isArray(data) ? data : [];
+        // Backend returns MessageList: {messages: [...], total: N}
+        const msgs = data.messages ? data.messages : Array.isArray(data) ? data : [];
         setChatByShellId((prev) => ({ ...prev, [selectedId]: msgs }));
         setIsChatHistoryLoading(false);
       })
@@ -819,7 +821,8 @@ function AIShellsTab({ studyId, studyName }) {
         const r = await fetch(`${API_BASE}/studies/${studyId}/shells/${shellId}/messages`);
         if (!r.ok) throw new Error(`Messages error ${r.status}`);
         const data = await r.json();
-        const msgs = Array.isArray(data) ? data : [];
+        // Backend returns MessageList: {messages: [...], total: N}
+        const msgs = data.messages ? data.messages : Array.isArray(data) ? data : [];
         setChatByShellId((prev) => ({ ...prev, [shellId]: msgs }));
       } catch {
         // Silently keep whatever is already in local state on refresh failure

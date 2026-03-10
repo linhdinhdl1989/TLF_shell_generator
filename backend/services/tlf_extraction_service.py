@@ -39,41 +39,41 @@ def extract_tlf_candidates_from_sap(parsed_content: str) -> List[Dict[str, Any]]
     """
     if not parsed_content:
         return []
-
+    
     lines = parsed_content.split('\n')
     candidates = []
     seen_numbers = set()
-
+    
     # Find global context clues (analysis set, grouping)
     global_context = _extract_global_context(parsed_content)
-
+    
     for i, line in enumerate(lines):
         line_stripped = line.strip()
         if not line_stripped:
             continue
-
+        
         # Try to find TLF number in line
         number, output_type = _extract_number_and_type(line_stripped)
         if not number or number in seen_numbers:
             continue
         seen_numbers.add(number)
-
+        
         # Extract raw title text (text after the number on the same line)
         raw_title = _extract_raw_title(line_stripped, number, output_type)
-
+        
         # Get nearby context (surrounding lines)
         context_lines = lines[max(0, i-3):min(len(lines), i+4)]
         nearby_context = ' '.join(context_lines)
-
+        
         # Infer section from number prefix and title keywords
         section = _infer_section(number, raw_title, nearby_context)
-
+        
         # Look for subtitle/grouping clues in nearby context
         subtitle_context = _find_grouping_context(nearby_context, global_context)
-
+        
         # Look for analysis set clues
         analysis_set_context = _find_analysis_set_context(nearby_context, global_context, section)
-
+        
         candidates.append({
             "number": number,
             "raw_title": raw_title,
@@ -85,7 +85,7 @@ def extract_tlf_candidates_from_sap(parsed_content: str) -> List[Dict[str, Any]]
                 "analysis_set_context": analysis_set_context,
             }
         })
-
+    
     return candidates
 
 
@@ -96,12 +96,12 @@ def _extract_number_and_type(line: str):
     if m:
         output_type = m.group(1).lower()
         return m.group(2), output_type
-
+    
     # Plain number pattern
     m = re.search(r'\b(1[456]\.\d+(?:\.\d+)*)\b', line)
     if m:
         return m.group(1), None
-
+    
     return None, None
 
 
@@ -113,7 +113,7 @@ def _extract_raw_title(line: str, number: str, output_type: Optional[str]) -> Op
         text = re.sub(r'\b(?:Table|Listing|Figure)\s+' + re.escape(number), '', text, flags=re.IGNORECASE)
     else:
         text = text.replace(number, '', 1)
-
+    
     # Clean up
     text = re.sub(r'^[\s\-\u2013:\.]+', '', text.strip())
     text = re.sub(r'[\s\.]+$', '', text)
@@ -131,13 +131,13 @@ def _infer_section(number: str, raw_title: Optional[str], context: str) -> str:
         return "safety"
     if re.match(r'^14\.4', number):
         return "pharmacokinetics"
-
+    
     # Fall back to keyword matching
     search_text = ((raw_title or '') + ' ' + context).lower()
     for section, keywords in SECTION_KEYWORDS.items():
         if any(kw in search_text for kw in keywords):
             return section
-
+    
     return "other"
 
 
@@ -151,7 +151,7 @@ def _find_grouping_context(nearby: str, global_context: Dict) -> Optional[str]:
                 return f"by {m.group(1).strip().title()}"
             except IndexError:
                 pass
-
+    
     # Check global context
     return global_context.get("default_grouping")
 
@@ -163,7 +163,7 @@ def _find_analysis_set_context(nearby: str, global_context: Dict, section: str) 
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             return m.group(0).strip().title()
-
+    
     # Fall back to section defaults from global context
     return global_context.get(f"default_analysis_set_{section}") or global_context.get("default_analysis_set")
 
@@ -172,7 +172,7 @@ def _extract_global_context(content: str) -> Dict[str, Any]:
     """Extract global/study-level context clues from SAP."""
     ctx = {}
     text = content.lower()
-
+    
     # Look for default grouping
     for pattern in GROUPING_PATTERNS:
         m = re.search(pattern, text, re.IGNORECASE)
@@ -182,10 +182,10 @@ def _extract_global_context(content: str) -> Dict[str, Any]:
             except IndexError:
                 pass
             break
-
+    
     # Look for primary analysis set
     m = re.search(r'(?:primary|main)\s+analysis\s+(?:will\s+use\s+the\s+)?(\w[\w\s]+?(?:population|set))', text, re.IGNORECASE)
     if m:
         ctx["default_analysis_set"] = m.group(1).strip().title()
-
+    
     return ctx

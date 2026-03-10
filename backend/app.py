@@ -59,12 +59,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "services"))
+
 from database import get_db, init_db
-from models import Action, Document, GlobalRequirement, Message, Shell, Study, TLF
+from models import Action, Document, GlobalRequirement, Message, Shell, Study, TLF, TLFListItem
 from schemas import (
     ActionCreate,
     ActionList,
     ActionRead,
+    BulkUpdateAnalysisSetRequest,
     ChatRequest,
     ChatResponse,
     DocumentList,
@@ -87,6 +92,10 @@ from schemas import (
     TLFCreate,
     TLFList,
     TLFListBulkUpdate,
+    TLFListItemCreate,
+    TLFListItemRead,
+    TLFListItemUpdate,
+    TLFListResponse,
     TLFRead,
     TLFUpdate,
 )
@@ -760,6 +769,348 @@ async def approve_tlf_list(
         await db.refresh(tlf)
 
     return TLFList(tlfs=list(tlfs), total=len(tlfs))
+
+
+# ===========================================================================
+# TLFListItem endpoints (new normalized TLF list with provenance)
+# ===========================================================================
+
+def _get_stub_extraction_candidates():
+    """Return stub clinical TLF candidates when no SAP content is available."""
+    return [
+        {"number": "14.1.1", "raw_title": "Summary of Demographic and Baseline Characteristics", "output_type": "table", "section": "demographics",
+         "extraction_evidence": {"subtitle_context": "By Treatment Group", "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.1.2", "raw_title": "Medical History Summary", "output_type": "table", "section": "demographics",
+         "extraction_evidence": {"subtitle_context": "By Treatment Group", "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.1.3", "raw_title": "Prior and Concomitant Medications", "output_type": "table", "section": "demographics",
+         "extraction_evidence": {"subtitle_context": None, "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.2.1", "raw_title": "Primary Efficacy Endpoint - Change from Baseline", "output_type": "table", "section": "efficacy",
+         "extraction_evidence": {"subtitle_context": "By Treatment Group", "analysis_set_context": "Full Analysis Set", "title_text_source": "stub"}},
+        {"number": "14.2.2", "raw_title": "Responder Analysis (>=30% Improvement)", "output_type": "table", "section": "efficacy",
+         "extraction_evidence": {"subtitle_context": "By Treatment Group", "analysis_set_context": "Full Analysis Set", "title_text_source": "stub"}},
+        {"number": "14.2.3", "raw_title": "Time to First Response", "output_type": "figure", "section": "efficacy",
+         "extraction_evidence": {"subtitle_context": "Kaplan-Meier Analysis", "analysis_set_context": "Full Analysis Set", "title_text_source": "stub"}},
+        {"number": "14.3.1.1", "raw_title": "Adverse Events - Overview", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": None, "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.3.1.2", "raw_title": "Treatment-Emergent Adverse Events", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": "By SOC and PT", "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.3.2.1", "raw_title": "Serious Adverse Events", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": None, "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.3.2.2", "raw_title": "Adverse Events Leading to Discontinuation", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": None, "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.3.3.1", "raw_title": "Clinical Laboratory Parameters - Summary Statistics", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": "By Treatment Group", "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+        {"number": "14.3.3.2", "raw_title": "Clinically Notable Laboratory Values", "output_type": "table", "section": "safety",
+         "extraction_evidence": {"subtitle_context": None, "analysis_set_context": "Safety Population", "title_text_source": "stub"}},
+    ]
+
+
+@app.get("/studies/{study_id}/tlf-list/items", response_model=TLFListResponse, tags=["TLF List Items"])
+async def get_tlf_list_items(study_id: str, db: AsyncSession = Depends(get_db)):
+    await _get_study(study_id, db)
+    result = await db.execute(
+        select(TLFListItem).where(TLFListItem.study_id == study_id).order_by(TLFListItem.order_index, TLFListItem.number)
+    )
+    items = result.scalars().all()
+    approved_count = sum(1 for i in items if i.approved)
+    return TLFListResponse(items=list(items), total=len(items), approved_count=approved_count)
+
+
+@app.post("/studies/{study_id}/tlf-list/extract-items", response_model=TLFListResponse, status_code=201, tags=["TLF List Items"])
+async def extract_tlf_list_items(study_id: str, db: AsyncSession = Depends(get_db)):
+    """Extract candidate TLF list from SAP parsed content, normalize, and store."""
+    from services.tlf_extraction_service import extract_tlf_candidates_from_sap
+    from services.tlf_title_normalizer import normalize_tlf_title
+
+    await _get_study(study_id, db)
+
+    # Get parsed SAP content
+    sap_result = await db.execute(
+        select(Document).where(Document.study_id == study_id)
+        .where(Document.type == "sap").where(Document.status == "ready")
+        .order_by(Document.created_at.desc())
+    )
+    sap_doc = sap_result.scalars().first()
+
+    if not sap_doc:
+        candidates = _get_stub_extraction_candidates()
+        source = "clinical_stub"
+    else:
+        parsed_content = getattr(sap_doc, 'parsed_content', '') or ''
+        if not parsed_content:
+            candidates = _get_stub_extraction_candidates()
+            source = "sap_stub"
+        else:
+            candidates = extract_tlf_candidates_from_sap(parsed_content)
+            source = "extracted"
+        if not candidates:
+            candidates = _get_stub_extraction_candidates()
+            source = "clinical_stub"
+
+    # Delete existing extracted items for this study
+    await db.execute(delete(TLFListItem).where(TLFListItem.study_id == study_id))
+
+    new_items = []
+    for i, cand in enumerate(candidates):
+        normalized = normalize_tlf_title(
+            raw_title=cand.get("raw_title"),
+            extraction_evidence=cand.get("extraction_evidence"),
+        )
+        item = TLFListItem(
+            id=str(uuid.uuid4()),
+            study_id=study_id,
+            number=cand["number"],
+            output_type=cand.get("output_type", "table"),
+            section=cand.get("section", "other"),
+            raw_title=cand.get("raw_title"),
+            source=source,
+            extraction_notes=str(cand.get("extraction_evidence", {})),
+            title=normalized["title"],
+            subtitle=normalized["subtitle"],
+            analysis_set=normalized["analysis_set"],
+            composed_title=normalized["composed_title"],
+            title_source=normalized["title_source"],
+            subtitle_source=normalized["subtitle_source"],
+            analysis_set_source=normalized["analysis_set_source"],
+            parsing_confidence=normalized["parsing_confidence"],
+            status="pending",
+            approved=False,
+            order_index=i,
+        )
+        db.add(item)
+        new_items.append(item)
+
+    await _log_action(db, study_id=study_id, action_type="ai_suggestion", target="tlf_list_items",
+                      after={"extracted_count": len(new_items), "source": source}, actor="ai")
+    await db.flush()
+    for item in new_items:
+        await db.refresh(item)
+
+    approved_count = 0
+    return TLFListResponse(items=new_items, total=len(new_items), approved_count=approved_count)
+
+
+@app.post("/studies/{study_id}/tlf-list/upload-items", response_model=TLFListResponse, status_code=201, tags=["TLF List Items"])
+async def upload_tlf_list_items(
+    study_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload CSV or Excel TLF list. Normalizes each row and stores."""
+    from services.tlf_title_normalizer import normalize_uploaded_row
+    from services.tlf_extraction_service import _infer_section
+    import io
+
+    await _get_study(study_id, db)
+
+    content = await file.read()
+    filename = file.filename or ""
+    rows = []
+    warnings = []
+
+    try:
+        if filename.endswith(".csv"):
+            import csv
+            reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+            rows = list(reader)
+        elif filename.endswith((".xlsx", ".xls")):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(content))
+                ws = wb.active
+                headers = [str(c.value or "").strip().lower().replace(" ", "_") for c in next(ws.iter_rows(max_row=1))]
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    rows.append({headers[j]: (str(v) if v is not None else "") for j, v in enumerate(row)})
+            except ImportError:
+                raise HTTPException(status_code=400, detail="openpyxl not installed. Upload CSV instead.")
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Use .csv or .xlsx")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {e}")
+
+    # Delete existing items
+    await db.execute(delete(TLFListItem).where(TLFListItem.study_id == study_id))
+
+    new_items = []
+    for i, row in enumerate(rows):
+        if not any(row.values()):
+            continue
+
+        # Normalize column names
+        normalized_row = {}
+        for k, v in row.items():
+            clean_k = k.strip().lower().replace(" ", "_").replace("-", "_")
+            normalized_row[clean_k] = str(v).strip() if v else ""
+
+        number = normalized_row.get("number") or normalized_row.get("#") or normalized_row.get("tlf_number") or ""
+        if not number:
+            warnings.append(f"Row {i+2}: missing TLF number, skipped")
+            continue
+
+        norm = normalize_uploaded_row(normalized_row)
+
+        # Infer section and output_type if not provided
+        section = normalized_row.get("section") or _infer_section(number, norm.get("title") or "", "")
+        output_type = normalized_row.get("output_type") or normalized_row.get("type") or "table"
+
+        item = TLFListItem(
+            id=str(uuid.uuid4()),
+            study_id=study_id,
+            number=number,
+            output_type=output_type,
+            section=section,
+            raw_title=normalized_row.get("raw_title") or normalized_row.get("complete_title"),
+            source="uploaded",
+            title=norm["title"] or number,
+            subtitle=norm["subtitle"],
+            analysis_set=norm["analysis_set"],
+            composed_title=norm["composed_title"] or norm["title"] or number,
+            title_source=norm["title_source"],
+            subtitle_source=norm["subtitle_source"],
+            analysis_set_source=norm["analysis_set_source"],
+            parsing_confidence=norm["parsing_confidence"],
+            status="pending",
+            approved=False,
+            order_index=i,
+        )
+        db.add(item)
+        new_items.append(item)
+
+    await db.flush()
+    for item in new_items:
+        await db.refresh(item)
+
+    approved_count = 0
+    return TLFListResponse(items=new_items, total=len(new_items), approved_count=approved_count)
+
+
+@app.post("/studies/{study_id}/tlf-list/items", response_model=TLFListItemRead, status_code=201, tags=["TLF List Items"])
+async def create_tlf_list_item(study_id: str, body: TLFListItemCreate, db: AsyncSession = Depends(get_db)):
+    from services.tlf_title_normalizer import _build_composed_title
+    await _get_study(study_id, db)
+
+    # Recompute composed_title
+    composed = _build_composed_title(body.title, body.subtitle, body.analysis_set)
+
+    item = TLFListItem(
+        id=str(uuid.uuid4()),
+        study_id=study_id,
+        number=body.number,
+        output_type=body.output_type or "table",
+        section=body.section or "other",
+        raw_title=body.raw_title,
+        source="user",
+        title=body.title,
+        subtitle=body.subtitle,
+        analysis_set=body.analysis_set,
+        composed_title=composed,
+        title_source="user_edit",
+        subtitle_source="user_edit" if body.subtitle else None,
+        analysis_set_source="user_edit" if body.analysis_set else None,
+        parsing_confidence="high" if body.analysis_set else "medium",
+        status="pending",
+        approved=False,
+        order_index=body.order_index,
+    )
+    db.add(item)
+    await db.flush()
+    await db.refresh(item)
+    return item
+
+
+@app.put("/studies/{study_id}/tlf-list/items/{item_id}", response_model=TLFListItemRead, tags=["TLF List Items"])
+async def update_tlf_list_item(study_id: str, item_id: str, body: TLFListItemUpdate, db: AsyncSession = Depends(get_db)):
+    from services.tlf_title_normalizer import _build_composed_title
+    await _get_study(study_id, db)
+    item = await db.get(TLFListItem, item_id)
+    if item is None or item.study_id != study_id:
+        raise HTTPException(status_code=404, detail=f"TLFListItem '{item_id}' not found.")
+
+    updates = body.model_dump(exclude_none=True)
+    for field, value in updates.items():
+        setattr(item, field, value)
+        # Track user edits in provenance
+        if field == "title":
+            item.title_source = "user_edit"
+        elif field == "subtitle":
+            item.subtitle_source = "user_edit"
+        elif field == "analysis_set":
+            item.analysis_set_source = "user_edit"
+
+    # Recompute composed_title
+    item.composed_title = _build_composed_title(item.title, item.subtitle, item.analysis_set)
+
+    # Update confidence when user explicitly fills in analysis_set
+    if "analysis_set" in updates and updates["analysis_set"]:
+        item.parsing_confidence = "high"
+
+    item.updated_at = datetime.utcnow()
+    await db.flush()
+    await db.refresh(item)
+    return item
+
+
+@app.post("/studies/{study_id}/tlf-list/items/{item_id}/approve", response_model=TLFListItemRead, tags=["TLF List Items"])
+async def approve_tlf_list_item(study_id: str, item_id: str, db: AsyncSession = Depends(get_db)):
+    await _get_study(study_id, db)
+    item = await db.get(TLFListItem, item_id)
+    if item is None or item.study_id != study_id:
+        raise HTTPException(status_code=404, detail=f"TLFListItem '{item_id}' not found.")
+    item.approved = True
+    item.status = "approved"
+    item.updated_at = datetime.utcnow()
+    await db.flush()
+    await db.refresh(item)
+    return item
+
+
+@app.post("/studies/{study_id}/tlf-list/approve-all-items", response_model=TLFListResponse, tags=["TLF List Items"])
+async def approve_all_tlf_list_items(study_id: str, db: AsyncSession = Depends(get_db)):
+    await _get_study(study_id, db)
+    result = await db.execute(select(TLFListItem).where(TLFListItem.study_id == study_id))
+    items = result.scalars().all()
+    for item in items:
+        item.approved = True
+        item.status = "approved"
+        item.updated_at = datetime.utcnow()
+    await db.flush()
+    for item in items:
+        await db.refresh(item)
+    approved_count = len(items)
+    return TLFListResponse(items=list(items), total=len(items), approved_count=approved_count)
+
+
+@app.delete("/studies/{study_id}/tlf-list/items/{item_id}", status_code=204, tags=["TLF List Items"])
+async def delete_tlf_list_item(study_id: str, item_id: str, db: AsyncSession = Depends(get_db)):
+    await _get_study(study_id, db)
+    item = await db.get(TLFListItem, item_id)
+    if item is None or item.study_id != study_id:
+        raise HTTPException(status_code=404, detail=f"TLFListItem '{item_id}' not found.")
+    await db.delete(item)
+
+
+@app.post("/studies/{study_id}/tlf-list/bulk-update-analysis-set", tags=["TLF List Items"])
+async def bulk_update_analysis_set(study_id: str, body: BulkUpdateAnalysisSetRequest, db: AsyncSession = Depends(get_db)):
+    from services.tlf_title_normalizer import _build_composed_title
+    await _get_study(study_id, db)
+    result = await db.execute(
+        select(TLFListItem).where(TLFListItem.study_id == study_id).where(TLFListItem.id.in_(body.item_ids))
+    )
+    items = result.scalars().all()
+    for item in items:
+        item.analysis_set = body.analysis_set
+        item.analysis_set_source = "user_edit"
+        item.composed_title = _build_composed_title(item.title, item.subtitle, item.analysis_set)
+        if item.parsing_confidence == "low":
+            item.parsing_confidence = "medium"
+        item.updated_at = datetime.utcnow()
+    await db.flush()
+    for item in items:
+        await db.refresh(item)
+    approved_count = sum(1 for i in items if i.approved)
+    return {"updated_count": len(items), "items": [TLFListItemRead.model_validate(i) for i in items]}
 
 
 # ===========================================================================

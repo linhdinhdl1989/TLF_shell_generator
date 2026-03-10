@@ -71,6 +71,7 @@ from schemas import (
     DocumentRead,
     DocumentType,
     DocumentUpdate,
+    GlobalRequirementBulkUpdate,
     GlobalRequirementCreate,
     GlobalRequirementList,
     GlobalRequirementRead,
@@ -860,6 +861,45 @@ async def delete_global_requirement(
     await db.delete(req)
 
 
+@app.put(
+    "/studies/{study_id}/global-requirements",
+    response_model=GlobalRequirementList,
+    tags=["Global Requirements"],
+    summary="Bulk-replace all global requirements for a study",
+)
+async def bulk_replace_global_requirements(
+    study_id: str,
+    body: GlobalRequirementBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    PUT /studies/{study_id}/global-requirements
+
+    Replaces the entire set of global requirements for this study.
+    Existing requirements are deleted and re-created from the payload.
+    Use this for the 'Save Requirements' action in the Global Requirements tab.
+    """
+    await _get_study(study_id, db)
+
+    await db.execute(delete(GlobalRequirement).where(GlobalRequirement.study_id == study_id))
+
+    new_reqs: List[GlobalRequirement] = []
+    for item in body.requirements:
+        req = GlobalRequirement(
+            id=str(uuid.uuid4()),
+            study_id=study_id,
+            **item.model_dump(),
+        )
+        db.add(req)
+        new_reqs.append(req)
+
+    await db.flush()
+    for req in new_reqs:
+        await db.refresh(req)
+
+    return GlobalRequirementList(requirements=new_reqs, total=len(new_reqs))
+
+
 # ===========================================================================
 # Shells  (per-shell AI-generated mock shells, PRD §4.4)
 # ===========================================================================
@@ -913,26 +953,71 @@ async def create_shell(
     """
     POST /studies/{study_id}/shells
 
-    Creates a new shell record.  In production this would trigger the
-    Biostat Expert → Builder → Reviewer AI loop (PRD §4.4).
+    Creates a new shell record.  Consults Global Requirements to apply
+    section-level defaults (columns, title template) when a TLF is linked.
+    In production this would trigger the Biostat Expert → Builder → Reviewer
+    AI loop (PRD §4.4).
+
+    Precedence:
+      1. Explicit SAP content / user overrides in the request body
+      2. Global Requirements defaults for the matching section type
+      3. Fallback built-in defaults
     """
     await _get_study(study_id, db)
+
+    applied_columns = body.columns
+    applied_title = body.title
+    applied_subtitle = body.subtitle
+    gr_used: Optional[str] = None  # section_type of matched global requirement
+
     if body.tlf_id:
-        await _get_tlf(study_id, body.tlf_id, db)
+        tlf = await _get_tlf(study_id, body.tlf_id, db)
+
+        # Consult global requirements for the TLF's section
+        if tlf.section_ref:
+            req_result = await db.execute(
+                select(GlobalRequirement)
+                .where(GlobalRequirement.study_id == study_id)
+                .where(GlobalRequirement.section_type == tlf.section_ref)
+            )
+            matched_req = req_result.scalars().first()
+
+            if matched_req:
+                gr_used = matched_req.section_type
+
+                # Apply columns from global requirements only if not explicitly provided
+                if not body.columns and matched_req.columns:
+                    applied_columns = matched_req.columns
+
+                # Apply title template if title is generic/empty
+                if matched_req.title_template and body.title in ("New Shell", "", None):
+                    applied_title = (
+                        matched_req.title_template
+                        .replace("{number}", tlf.number or "")
+                        .replace("{title}", tlf.title or "")
+                        .replace("{population}", body.population or "")
+                    )
+
+                # Apply subtitle template if not explicitly provided
+                if matched_req.subtitle_template and not body.subtitle:
+                    applied_subtitle = matched_req.subtitle_template
 
     shell = Shell(
         id=str(uuid.uuid4()),
         study_id=study_id,
         tlf_id=body.tlf_id,
         type=body.type.value,
-        title=body.title,
-        subtitle=body.subtitle,
+        title=applied_title,
+        subtitle=applied_subtitle,
         population=body.population,
-        columns=body.columns,
+        columns=applied_columns,
         rows=body.rows,
         footnotes=body.footnotes,
         status="draft",
-        ai_generation_log={"note": "AI generation stub — replace with per-shell loop"},
+        ai_generation_log={
+            "note": "AI generation stub — replace with per-shell loop",
+            "global_requirement_applied": gr_used,
+        },
     )
     db.add(shell)
 

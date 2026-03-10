@@ -260,145 +260,374 @@ function DocumentsTab() {
 
 // ─── Tab 2: TLF List ──────────────────────────────────────────────────────────
 
-function TLFTab() {
-  const [tlfs, setTlfs] = useState(INITIAL_TLFS);
+function TLFTab({ studyId }) {
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [tlfs, setTlfs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [actionError, setActionError] = useState(null);
+
+  // Chat state
   const [chatInput, setChatInput] = useState("");
   const [chatMessages, setChatMessages] = useState([
-    { role: "assistant", text: "I can help you refine the TLF list. Try: 'Add AE by SOC table' or 'Remove listing 14.3.2.1'." },
+    { role: "assistant", text: "I can help refine the TLF list. Try: 'Add AE by SOC table', 'split efficacy section', or describe what you need." },
   ]);
-  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [chatError, setChatError] = useState(null);
+
   const chatEndRef = useRef(null);
+  const saveTimerRef = useRef(null);
+  const tlfsRef = useRef(tlfs);
+
+  // Keep ref current for the debounced save closure
+  useEffect(() => { tlfsRef.current = tlfs; }, [tlfs]);
+
+  // ── Adapters ───────────────────────────────────────────────────────────────
+
+  // Backend TLF row → frontend display object
+  const fromBackend = (tlf) => ({
+    id: tlf.id,
+    number: tlf.number || "",
+    title: tlf.title || "",
+    // section_ref stores the section category ("demographics", "safety", etc.)
+    section: tlf.section_ref || "other",
+    status: tlf.status || "proposed",
+  });
+
+  // Frontend TLF list → backend bulk-replace payload
+  const toBackendBulk = (list) => ({
+    tlfs: list.map((t, i) => ({
+      number: t.number || "",
+      title: t.title || "",
+      type: "table",
+      section_ref: t.section || "other",
+      status: t.status || "proposed",
+      order_index: i,
+    })),
+  });
+
+  // ── Load ───────────────────────────────────────────────────────────────────
+
+  const loadTlfs = useCallback(async () => {
+    if (!studyId) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/tlf-list`);
+      if (!r.ok) throw new Error(`Load failed (${r.status})`);
+      const data = await r.json();
+      setTlfs((data.tlfs || []).map(fromBackend));
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [studyId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (studyId) loadTlfs();
+  }, [studyId, loadTlfs]);
+
+  // ── Debounced save (bulk replace) ─────────────────────────────────────────
+
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    setSaveState("saving");
+    saveTimerRef.current = setTimeout(async () => {
+      if (!studyId) return;
+      try {
+        const r = await fetch(`${API_BASE}/studies/${studyId}/tlf-list`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(toBackendBulk(tlfsRef.current)),
+        });
+        if (!r.ok) throw new Error(`Save failed (${r.status})`);
+        const data = await r.json();
+        // Update IDs from backend (temp IDs → real UUIDs)
+        setTlfs((data.tlfs || []).map(fromBackend));
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 2000);
+      } catch (err) {
+        console.error("TLF save error:", err);
+        setSaveState("error");
+      }
+    }, 800);
+  }, [studyId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Row operations ─────────────────────────────────────────────────────────
 
   const addRow = () => {
-    setTlfs((prev) => [...prev, { id: Date.now(), number: "", title: "", section: "demographics", status: "proposed" }]);
+    setTlfs((prev) => [
+      ...prev,
+      { id: `temp-${Date.now()}`, number: "", title: "", section: "demographics", status: "proposed" },
+    ]);
+    scheduleSave();
   };
 
   const updateTlf = (id, field, value) => {
     setTlfs((prev) => prev.map((t) => (t.id === id ? { ...t, [field]: value } : t)));
+    scheduleSave();
   };
 
-  const removeRow = (id) => setTlfs((prev) => prev.filter((t) => t.id !== id));
-
-  const approveAll = () => {
-    setTlfs((prev) => prev.map((t) => ({ ...t, status: "approved" })));
-    console.log("TLF List approved:", tlfs);
+  const removeRow = (id) => {
+    setTlfs((prev) => prev.filter((t) => t.id !== id));
+    scheduleSave();
   };
 
-  const extractFromSAP = () => {
-    setIsAiLoading(true);
-    setTimeout(() => {
-      setTlfs((prev) => [
-        ...prev,
-        { id: Date.now() + 1, number: "14.3.3.1", title: "Adverse Events by System Organ Class (AI Extracted)", section: "safety", status: "proposed" },
-        { id: Date.now() + 2, number: "14.5.1", title: "Prior and Concomitant Medications (AI Extracted)", section: "safety", status: "proposed" },
-      ]);
-      setIsAiLoading(false);
-    }, 1500);
+  // ── AI Extract from SAP ────────────────────────────────────────────────────
+
+  const extractFromSAP = async () => {
+    if (!studyId) return;
+    setIsExtracting(true);
+    setActionError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/tlf-list/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!r.ok) throw new Error(`Extraction failed (${r.status})`);
+      const data = await r.json();
+      setTlfs((data.tlfs || []).map(fromBackend));
+      setSaveState("idle"); // backend already persisted; no local save needed
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setIsExtracting(false);
+    }
   };
 
-  const sendChat = () => {
-    if (!chatInput.trim()) return;
-    const userMsg = { role: "user", text: chatInput };
-    setChatMessages((prev) => [...prev, userMsg]);
+  // ── Approve List ───────────────────────────────────────────────────────────
+
+  const approveAll = async () => {
+    if (!studyId) return;
+    setIsApproving(true);
+    setActionError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/tlf-list/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!r.ok) throw new Error(`Approval failed (${r.status})`);
+      const data = await r.json();
+      setTlfs((data.tlfs || []).map(fromBackend));
+      setSaveState("idle");
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  // ── Chat ───────────────────────────────────────────────────────────────────
+
+  const sendChat = async () => {
+    const prompt = chatInput.trim();
+    if (!prompt || isChatLoading || !studyId) return;
     setChatInput("");
-    setIsAiLoading(true);
-    setTimeout(() => {
-      let reply = "I've noted your request. Please review the updated TLF list above.";
-      const lower = chatInput.toLowerCase();
-      if (lower.includes("ae by soc") || lower.includes("adverse event")) {
-        setTlfs((prev) => [
-          ...prev,
-          { id: Date.now(), number: "14.3.1.3", title: "Adverse Events by System Organ Class and Preferred Term", section: "safety", status: "proposed" },
-        ]);
-        reply = "Added: 'Adverse Events by System Organ Class and Preferred Term' as Table 14.3.1.3.";
-      } else if (lower.includes("remove") || lower.includes("delete")) {
-        reply = "To remove a row, use the trash icon in the table. I can only add rows via chat.";
-      }
-      setChatMessages((prev) => [...prev, { role: "assistant", text: reply }]);
-      setIsAiLoading(false);
+    setChatMessages((prev) => [...prev, { role: "user", text: prompt }]);
+    setIsChatLoading(true);
+    setChatError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "tlf_list", prompt }),
+      });
+      if (!r.ok) throw new Error(`Chat failed (${r.status})`);
+      const data = await r.json();
+      const aiText = data.ai_message?.text || "No response.";
+      setChatMessages((prev) => [...prev, { role: "assistant", text: aiText }]);
+    } catch (err) {
+      setChatError("Could not reach the AI assistant.");
+    } finally {
+      setIsChatLoading(false);
       setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-    }, 1200);
+    }
   };
+
+  // ── Derived state ──────────────────────────────────────────────────────────
+
+  const busy = isExtracting || isApproving;
+  const allApproved = tlfs.length > 0 && tlfs.every((t) => t.status === "approved");
+
+  // ── Loading / error states ─────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+        <Loader2 size={20} className="animate-spin" />
+        <span className="text-sm">Loading TLF list…</span>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <AlertCircle size={24} className="text-red-400" />
+        <p className="text-sm font-medium text-red-600">Failed to load TLF list</p>
+        <p className="text-xs text-red-400">{loadError}</p>
+        <button onClick={loadTlfs} className="text-sm text-indigo-600 underline hover:text-indigo-800">
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
+      {/* Action bar */}
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={extractFromSAP}
-          disabled={isAiLoading}
+          disabled={busy}
           className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-60"
         >
-          {isAiLoading ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />}
+          {isExtracting ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />}
           AI Extract from SAP
         </button>
-        <button onClick={addRow} className="flex items-center gap-2 border border-gray-300 text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-50 transition">
+        <button
+          onClick={addRow}
+          disabled={busy}
+          className="flex items-center gap-2 border border-gray-300 text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-50 transition disabled:opacity-60"
+        >
           <Plus size={14} /> Add Row
         </button>
-        <button onClick={approveAll} className="flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-green-700 transition ml-auto">
-          <Check size={14} /> Approve List
+        <button
+          onClick={approveAll}
+          disabled={busy || tlfs.length === 0}
+          className="flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-green-700 transition disabled:opacity-60 ml-auto"
+        >
+          {isApproving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          Approve List
         </button>
+
+        {/* Save state indicator */}
+        {saveState === "saving" && (
+          <span className="text-xs text-gray-400 flex items-center gap-1">
+            <Loader2 size={11} className="animate-spin" /> Saving…
+          </span>
+        )}
+        {saveState === "saved" && (
+          <span className="text-xs text-green-600 flex items-center gap-1">
+            <Check size={11} /> Saved
+          </span>
+        )}
+        {saveState === "error" && (
+          <span className="text-xs text-red-500 flex items-center gap-1">
+            <AlertCircle size={11} /> Save failed
+          </span>
+        )}
+
+        {/* Approved badge */}
+        {allApproved && (
+          <span className="text-xs font-medium bg-green-100 text-green-700 px-2 py-0.5 rounded-full flex items-center gap-1">
+            <Check size={10} /> List Approved
+          </span>
+        )}
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="text-left px-4 py-3 font-semibold text-gray-600 w-32">Number</th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-600">Title</th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-600 w-36">Section</th>
-              <th className="text-left px-4 py-3 font-semibold text-gray-600 w-28">Status</th>
-              <th className="w-12 px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {tlfs.map((row) => (
-              <tr key={row.id} className="hover:bg-gray-50 group">
-                <td className="px-4 py-2">
-                  <input
-                    value={row.number}
-                    onChange={(e) => updateTlf(row.id, "number", e.target.value)}
-                    className="w-full text-sm border border-transparent hover:border-gray-300 focus:border-indigo-400 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400 font-mono"
-                    placeholder="14.x.x"
-                  />
-                </td>
-                <td className="px-4 py-2">
-                  <input
-                    value={row.title}
-                    onChange={(e) => updateTlf(row.id, "title", e.target.value)}
-                    className="w-full text-sm border border-transparent hover:border-gray-300 focus:border-indigo-400 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                  />
-                </td>
-                <td className="px-4 py-2">
-                  <select
-                    value={row.section}
-                    onChange={(e) => updateTlf(row.id, "section", e.target.value)}
-                    className="w-full text-xs border border-gray-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                  >
-                    <option value="demographics">Demographics</option>
-                    <option value="safety">Safety</option>
-                    <option value="efficacy">Efficacy</option>
-                    <option value="other">Other</option>
-                  </select>
-                </td>
-                <td className="px-4 py-2">
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${TLF_STATUS_COLORS[row.status] || "bg-gray-100 text-gray-600"}`}>
-                    {row.status}
-                  </span>
-                </td>
-                <td className="px-4 py-2">
-                  <button
-                    onClick={() => removeRow(row.id)}
-                    className="p-1 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </td>
+      {/* Inline error banner */}
+      {actionError && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-sm px-4 py-3 rounded-lg">
+          <AlertCircle size={16} className="flex-shrink-0" />
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-400 hover:text-red-600">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {tlfs.length === 0 ? (
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
+          <List size={32} className="mx-auto text-gray-300 mb-3" />
+          <p className="text-gray-500 font-medium mb-1">No TLF list yet</p>
+          <p className="text-gray-400 text-sm mb-4">
+            Run AI extraction from the SAP document, or add rows manually.
+          </p>
+          <button
+            onClick={extractFromSAP}
+            disabled={isExtracting}
+            className="inline-flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-60"
+          >
+            {isExtracting ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />}
+            AI Extract from SAP
+          </button>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-semibold text-gray-600 w-32">Number</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600">Title</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600 w-36">Section</th>
+                <th className="text-left px-4 py-3 font-semibold text-gray-600 w-28">Status</th>
+                <th className="w-12 px-4 py-3"></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {tlfs.map((row) => (
+                <tr key={row.id} className="hover:bg-gray-50 group">
+                  <td className="px-4 py-2">
+                    <input
+                      value={row.number}
+                      onChange={(e) => updateTlf(row.id, "number", e.target.value)}
+                      className="w-full text-sm border border-transparent hover:border-gray-300 focus:border-indigo-400 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400 font-mono"
+                      placeholder="14.x.x"
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <input
+                      value={row.title}
+                      onChange={(e) => updateTlf(row.id, "title", e.target.value)}
+                      className="w-full text-sm border border-transparent hover:border-gray-300 focus:border-indigo-400 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    />
+                  </td>
+                  <td className="px-4 py-2">
+                    <select
+                      value={row.section}
+                      onChange={(e) => updateTlf(row.id, "section", e.target.value)}
+                      className="w-full text-xs border border-gray-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    >
+                      <option value="demographics">Demographics</option>
+                      <option value="safety">Safety</option>
+                      <option value="efficacy">Efficacy</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </td>
+                  <td className="px-4 py-2">
+                    <span
+                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                        TLF_STATUS_COLORS[row.status] || "bg-gray-100 text-gray-600"
+                      }`}
+                    >
+                      {row.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">
+                    <button
+                      onClick={() => removeRow(row.id)}
+                      disabled={busy}
+                      className="p-1 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100 disabled:opacity-40"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
+      {/* AI TLF Assistant chat */}
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
           <MessageSquare size={16} className="text-indigo-500" />
@@ -407,16 +636,27 @@ function TLFTab() {
         <div className="h-40 overflow-y-auto px-4 py-3 space-y-2">
           {chatMessages.map((msg, i) => (
             <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-xs text-sm px-3 py-2 rounded-xl ${msg.role === "user" ? "bg-indigo-600 text-white rounded-br-none" : "bg-gray-100 text-gray-700 rounded-bl-none"}`}>
+              <div
+                className={`max-w-xs text-sm px-3 py-2 rounded-xl ${
+                  msg.role === "user"
+                    ? "bg-indigo-600 text-white rounded-br-none"
+                    : "bg-gray-100 text-gray-700 rounded-bl-none"
+                }`}
+              >
                 {msg.text}
               </div>
             </div>
           ))}
-          {isAiLoading && (
+          {isChatLoading && (
             <div className="flex justify-start">
               <div className="bg-gray-100 text-gray-400 text-sm px-3 py-2 rounded-xl rounded-bl-none flex items-center gap-1.5">
-                <Loader2 size={12} className="animate-spin" /> Thinking...
+                <Loader2 size={12} className="animate-spin" /> Thinking…
               </div>
+            </div>
+          )}
+          {chatError && (
+            <div className="flex items-center gap-1.5 text-xs text-red-500 px-1">
+              <AlertCircle size={11} /> {chatError}
             </div>
           )}
           <div ref={chatEndRef} />
@@ -426,12 +666,13 @@ function TLFTab() {
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChat()}
-            placeholder="e.g. Add AE by SOC table, remove listing 14.5.1..."
-            className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            placeholder="e.g. Add AE by SOC table, split efficacy section…"
+            disabled={isChatLoading || !studyId}
+            className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50"
           />
           <button
             onClick={sendChat}
-            disabled={!chatInput.trim() || isAiLoading}
+            disabled={!chatInput.trim() || isChatLoading || !studyId}
             className="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50"
           >
             <Send size={14} />
@@ -1523,7 +1764,16 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
         {/* ── Tab Content ── */}
         <div>
           {activeTab === "documents" && <DocumentsTab />}
-          {activeTab === "tlf" && <TLFTab />}
+          {activeTab === "tlf" && (
+            studyBootstrapping ? (
+              <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+                <Loader2 size={20} className="animate-spin" />
+                <span className="text-sm">Connecting to study…</span>
+              </div>
+            ) : (
+              <TLFTab studyId={backendStudyId || studyId} />
+            )
+          )}
           {activeTab === "global" && <GlobalRequirementsTab />}
           {activeTab === "shells" && (
             studyBootstrapping ? (

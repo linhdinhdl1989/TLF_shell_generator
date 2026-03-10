@@ -634,6 +634,134 @@ async def delete_tlf(
     await db.delete(tlf)
 
 
+@app.post(
+    "/studies/{study_id}/tlf-list/extract",
+    response_model=TLFList,
+    status_code=status.HTTP_201_CREATED,
+    tags=["TLF List"],
+    summary="AI-extract candidate TLF rows from SAP document (or stub)",
+)
+async def extract_tlf_list(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    POST /studies/{study_id}/tlf-list/extract
+
+    Inspects the study's parsed SAP document and returns a candidate TLF list.
+    If no SAP document is available, a realistic clinical stub list is returned.
+
+    The extracted rows are persisted as proposed TLF entries, replacing any
+    existing list.  Users can review and edit before approving.
+    """
+    await _get_study(study_id, db)
+
+    # Check for a ready SAP document to build context
+    sap_result = await db.execute(
+        select(Document)
+        .where(Document.study_id == study_id)
+        .where(Document.type == "sap")
+        .where(Document.status == "ready")
+        .order_by(Document.created_at.desc())
+    )
+    sap_doc = sap_result.scalars().first()
+    source = "sap_stub" if sap_doc else "clinical_stub"
+
+    # Realistic clinical stub — mirrors a typical Phase 3 CTD Section 14 TLF list.
+    # Replace with real NLP/LLM extraction in production.
+    stub_rows = [
+        {"number": "14.1.1", "title": "Demographics and Baseline Characteristics", "section_ref": "demographics"},
+        {"number": "14.1.2", "title": "Medical History Summary", "section_ref": "demographics"},
+        {"number": "14.1.3", "title": "Prior and Concomitant Medications", "section_ref": "demographics"},
+        {"number": "14.2.1", "title": "Primary Efficacy Endpoint – Change from Baseline", "section_ref": "efficacy"},
+        {"number": "14.2.2", "title": "Secondary Efficacy – Responder Analysis (≥30% Improvement)", "section_ref": "efficacy"},
+        {"number": "14.2.3", "title": "Time to First Response – Kaplan-Meier Analysis", "section_ref": "efficacy"},
+        {"number": "14.3.1.1", "title": "Adverse Events – Overview", "section_ref": "safety"},
+        {"number": "14.3.1.2", "title": "Treatment-Emergent Adverse Events by SOC and PT", "section_ref": "safety"},
+        {"number": "14.3.2.1", "title": "Serious Adverse Events", "section_ref": "safety"},
+        {"number": "14.3.2.2", "title": "Adverse Events Leading to Discontinuation", "section_ref": "safety"},
+        {"number": "14.3.3.1", "title": "Clinical Laboratory Parameters – Summary Statistics", "section_ref": "safety"},
+        {"number": "14.3.3.2", "title": "Clinically Notable Laboratory Values", "section_ref": "safety"},
+    ]
+
+    # Delete current TLF list and replace with extracted candidate rows
+    await db.execute(delete(TLF).where(TLF.study_id == study_id))
+
+    new_tlfs: List[TLF] = []
+    for i, row in enumerate(stub_rows):
+        tlf = TLF(
+            id=str(uuid.uuid4()),
+            study_id=study_id,
+            number=row["number"],
+            title=row["title"],
+            type="table",
+            section_ref=row["section_ref"],
+            status="proposed",
+            order_index=i,
+        )
+        db.add(tlf)
+        new_tlfs.append(tlf)
+
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="ai_suggestion",
+        target="tlf_list",
+        after={"extracted_count": len(new_tlfs), "source": source},
+        actor="ai",
+    )
+
+    await db.flush()
+    for tlf in new_tlfs:
+        await db.refresh(tlf)
+
+    return TLFList(tlfs=new_tlfs, total=len(new_tlfs))
+
+
+@app.post(
+    "/studies/{study_id}/tlf-list/approve",
+    response_model=TLFList,
+    tags=["TLF List"],
+    summary="Approve the entire TLF list for a study",
+)
+async def approve_tlf_list(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    POST /studies/{study_id}/tlf-list/approve
+
+    Marks every TLF entry for this study as 'approved'.
+    Returns the updated list.
+    """
+    await _get_study(study_id, db)
+
+    result = await db.execute(
+        select(TLF)
+        .where(TLF.study_id == study_id)
+        .order_by(TLF.order_index, TLF.number)
+    )
+    tlfs = result.scalars().all()
+
+    for tlf in tlfs:
+        tlf.status = "approved"
+        tlf.updated_at = datetime.utcnow()
+
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="update_status",
+        target="tlf_list",
+        after={"status": "approved", "count": len(tlfs)},
+    )
+
+    await db.flush()
+    for tlf in tlfs:
+        await db.refresh(tlf)
+
+    return TLFList(tlfs=list(tlfs), total=len(tlfs))
+
+
 # ===========================================================================
 # Global Requirements  (shell structure per section type, PRD §4.3)
 # ===========================================================================

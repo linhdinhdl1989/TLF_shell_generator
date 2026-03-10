@@ -611,7 +611,7 @@ function GlobalRequirementsTab() {
 
 // ─── Tab 4: AI Shells (backend-wired) ────────────────────────────────────────
 
-function AIShellsTab({ studyId }) {
+function AIShellsTab({ studyId, studyName }) {
   // ── State ──
   const [shells, setShells] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -646,6 +646,8 @@ function AIShellsTab({ studyId }) {
 
     fetch(`${API_BASE}/studies/${studyId}/shells`)
       .then((r) => {
+        if (r.status === 404)
+          throw new Error(`Study not found in backend (id: ${studyId}). Check the studyId prop mapping.`);
         if (!r.ok) throw new Error(`Server error ${r.status}`);
         return r.json();
       })
@@ -899,7 +901,7 @@ function AIShellsTab({ studyId }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `shells_study_${studyId}.json`;
+    a.download = `shells_study_${studyName || studyId}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1362,7 +1364,7 @@ const TABS = [
   { id: "shells", label: "AI Shells", icon: Layers },
 ];
 
-export default function StudyPage({ studyId = "XYZ-101" }) {
+export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
   const [activeTab, setActiveTab] = useState("documents");
   const [description, setDescription] = useState("Phase 3 clinical trial for a new hypertension medication.");
   const [showGlobalReqPanel, setShowGlobalReqPanel] = useState(false);
@@ -1413,13 +1415,13 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
             <ArrowLeft size={13} /> Studies
           </button>
           <span>/</span>
-          <span className="text-gray-700 font-medium">Study {studyId}</span>
+          <span className="text-gray-700 font-medium">Study {studyName}</span>
         </div>
 
         {/* ── Study Header ── */}
         <div className="flex flex-col md:flex-row gap-6 mb-6">
           <div className="flex-1">
-            <h1 className="text-3xl font-black text-gray-900 mb-2">Study {studyId}</h1>
+            <h1 className="text-3xl font-black text-gray-900 mb-2">Study {studyName}</h1>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -1483,7 +1485,7 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
           {activeTab === "documents" && <DocumentsTab />}
           {activeTab === "tlf" && <TLFTab />}
           {activeTab === "global" && <GlobalRequirementsTab />}
-          {activeTab === "shells" && <AIShellsTab studyId={studyId} />}
+          {activeTab === "shells" && <AIShellsTab studyId={studyId} studyName={studyName} />}
         </div>
       </main>
     </div>

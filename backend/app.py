@@ -944,21 +944,54 @@ async def post_chat(
     In production: forward context + prompt to the per-shell AI loop
     (Biostat Expert → Builder → Reviewer, PRD §4.4), then stream reply.
 
-    Body:
+    Body (either form accepted):
         {
-            "tlf_id":   "optional-tlf-uuid",
-            "shell_id": "optional-shell-uuid",
-            "prompt":   "Add a footnote referencing SAP Section 12.1"
+            "tlf_id":    "optional-tlf-uuid",
+            "shell_id":  "optional-shell-uuid",
+            "prompt":    "Add a footnote referencing SAP Section 12.1"
+        }
+    or:
+        {
+            "target":    "shell",
+            "target_id": "<shell_id>",
+            "prompt":    "Add a footnote referencing SAP Section 12.1"
         }
     """
     await _get_study(study_id, db)
+
+    # Resolve target/target_id routing to concrete FK fields
+    resolved_shell_id = body.shell_id
+    resolved_tlf_id = body.tlf_id
+
+    if body.target == "shell" and body.target_id:
+        resolved_shell_id = body.target_id
+    elif body.target == "tlf" and body.target_id:
+        resolved_tlf_id = body.target_id
+
+    # Build shell context for AI response generation
+    shell_context = ""
+    if resolved_shell_id:
+        shell_row = await db.get(Shell, resolved_shell_id)
+        if shell_row and shell_row.study_id == study_id:
+            col_labels = [c.get("label", "") for c in (shell_row.columns or [])]
+            row_labels = [r.get("label", "") for r in (shell_row.rows or [])[:10]]
+            footnotes = shell_row.footnotes or []
+            shell_context = (
+                f"\n\nShell context:"
+                f"\n  Title: {shell_row.title}"
+                f"\n  Type: {shell_row.type}"
+                f"\n  Population: {shell_row.population or 'Not specified'}"
+                f"\n  Columns: {', '.join(col_labels) if col_labels else 'None'}"
+                f"\n  Rows (first 10): {', '.join(row_labels) if row_labels else 'None'}"
+                f"\n  Footnotes: {'; '.join(footnotes) if footnotes else 'None'}"
+            )
 
     # Persist user message
     user_msg = Message(
         id=str(uuid.uuid4()),
         study_id=study_id,
-        tlf_id=body.tlf_id,
-        shell_id=body.shell_id,
+        tlf_id=resolved_tlf_id,
+        shell_id=resolved_shell_id,
         role="user",
         text=body.prompt,
         timestamp=datetime.utcnow(),
@@ -971,18 +1004,19 @@ async def post_chat(
     ai_text = (
         f'[AI STUB] Received: "{body.prompt}". '
         "In production this triggers the Biostat Expert -> Builder -> "
-        "Reviewer loop and returns structured shell updates."
+        f"Reviewer loop and returns structured shell updates.{shell_context}"
     )
     ai_msg = Message(
         id=str(uuid.uuid4()),
         study_id=study_id,
-        tlf_id=body.tlf_id,
-        shell_id=body.shell_id,
+        tlf_id=resolved_tlf_id,
+        shell_id=resolved_shell_id,
         role="ai",
         text=ai_text,
         timestamp=datetime.utcnow(),
         extra_metadata={
             "model": "stub",
+            "shell_id": resolved_shell_id,
             "retrieved_chunks": [],
             "confidence": None,
         },
@@ -1027,6 +1061,40 @@ async def get_chat_history(
         stmt = stmt.where(Message.shell_id == shell_id)
 
     stmt = stmt.offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+    return MessageList(messages=list(rows), total=len(rows))
+
+
+@app.get(
+    "/studies/{study_id}/shells/{shell_id}/messages",
+    response_model=MessageList,
+    tags=["Chat"],
+    summary="Get chat history for a specific shell",
+)
+async def get_shell_messages(
+    study_id: str,
+    shell_id: str,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    GET /studies/{study_id}/shells/{shell_id}/messages
+
+    Returns ordered chat history (user + AI messages) for a specific shell.
+    Used by the frontend to load per-shell persistent conversation history.
+    """
+    await _get_shell(study_id, shell_id, db)
+
+    stmt = (
+        select(Message)
+        .where(Message.study_id == study_id)
+        .where(Message.shell_id == shell_id)
+        .order_by(Message.timestamp)
+        .offset(skip)
+        .limit(limit)
+    )
     result = await db.execute(stmt)
     rows = result.scalars().all()
     return MessageList(messages=list(rows), total=len(rows))

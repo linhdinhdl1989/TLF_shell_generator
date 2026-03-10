@@ -324,6 +324,9 @@ class ChatRequest(BaseModel):
     tlf_id: Optional[str] = Field(None, description="Scopes conversation to a specific TLF")
     shell_id: Optional[str] = Field(None, description="Scopes conversation to a specific shell")
     prompt: str = Field(..., min_length=1, description="User's natural language message")
+    # Extensible target-based routing (alternative to tlf_id/shell_id)
+    target: Optional[str] = Field(None, description="Routing target type: 'shell' | 'tlf' | 'study'")
+    target_id: Optional[str] = Field(None, description="ID of the target entity")
 
 
 class MessageRead(BaseModel):

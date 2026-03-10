@@ -280,24 +280,9 @@ class Action(Base):
     tlf_id = Column(String, ForeignKey("tlfs.id", ondelete="SET NULL"), nullable=True, index=True)
     shell_id = Column(String, ForeignKey("shells.id", ondelete="SET NULL"), nullable=True, index=True)
 
-    type = Column(
-        Enum(
-            # Row-level edits (PRD §4.4.1)
-            "add_row", "delete_row", "update_row", "reorder_rows",
-            # Column-level edits
-            "add_column", "delete_column", "update_column",
-            # Header / metadata edits
-            "update_title", "update_subtitle", "update_population",
-            # Footnote edits
-            "add_footnote", "update_footnote", "delete_footnote",
-            # Lifecycle
-            "update_status", "approve_shell", "reject_shell",
-            # AI events
-            "ai_suggestion", "ai_variable_flagged", "ai_reviewer_correction",
-            name="action_type",
-        ),
-        nullable=False,
-    )
+    # Using String instead of Enum to support extensible action types without
+    # requiring a DB migration every time a new event category is added.
+    type = Column(String, nullable=False)
 
     # Human-readable target, e.g. "row:3", "column:arm_a", "footnote:0"
     target = Column(String)
@@ -308,6 +293,10 @@ class Action(Base):
 
     actor = Column(String, nullable=False, default="user")   # "user" | "ai"
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Enriched fields for human-readable audit event display
+    summary = Column(String)          # e.g. "Shell title updated: 'Demographics...'"
+    entity_type = Column(String)      # e.g. "shell" | "tlf_list" | "global_requirements"
 
     study = relationship("Study", back_populates="actions")
     tlf = relationship("TLF", back_populates="actions")

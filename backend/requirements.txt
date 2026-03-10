@@ -60,9 +60,8 @@ openpyxl>=3.1.2                  # Excel (.xlsx) extraction
 # ─────────────────────────────────────────────
 # Export (Phase 1 export endpoints)
 # ─────────────────────────────────────────────
-# Uncomment when export is implemented:
-# python-docx>=1.1.0               # Word export
-# openpyxl>=3.1.2                  # Excel export
+python-docx>=1.1.0               # Word export (.docx shell documents)
+# openpyxl>=3.1.2                  # Excel export (deferred)
 
 # ─────────────────────────────────────────────
 # Dev / testing

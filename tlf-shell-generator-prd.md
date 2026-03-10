@@ -151,6 +151,94 @@ For each shell in the approved TLF list, the app follows these rules:
       - Clearly marks all variables as "AI‑suggested (unconfirmed)".
     - The user must **confirm or adjust** the suggested structure before the shell is finalized.
 
+### 3.1.2 Title Structure and Analysis Set Handling
+
+**Title composition in clinical TLFs**
+
+Clinical TLF titles typically follow this pattern:
+[Core Title] [Subtitle] ([Analysis Set])
+
+
+Where:
+- **Core title**: Main description of the table content (required)
+- **Subtitle**: Optional descriptor, often starting with "by", "for", "stratified by" (optional)
+- **Analysis set**: Subject population analyzed, typically in parentheses (required)
+
+**Examples from real SAPs:**
+- "Summary of Demographics by Treatment Group (Safety Population)"
+- "Adverse Events by System Organ Class (Safety Population)"
+- "Primary Efficacy Endpoint Analysis (Intent-to-Treat Population)"
+- "Laboratory Values Over Time by Visit (Per-Protocol Population)"
+
+**Storage and parsing**
+
+Each TLF and shell must store:
+1. `title` - core title only
+2. `subtitle` - optional descriptor
+3. `analysis_set` - population designation
+4. `raw_title` - original complete title string from SAP (for reference)
+
+**TLF list extraction logic**
+
+When TLF list is extracted from SAP:
+
+1. System extracts raw title strings from SAP section 12.x (or equivalent shell list section)
+2. System **parses each title** to separate components using these rules:
+   - **Analysis set**: Extract content in final parentheses if it contains keywords like "Population", "Set", "Analysis", "Subjects"
+   - **Subtitle**: Extract phrase starting with "by", "for", "stratified by", "grouped by", etc.
+   - **Core title**: Remaining text before subtitle or analysis set
+3. System stores all components separately in TLF list rows
+4. User reviews parsed titles in TLF list editor and can adjust:
+   - Correct parsing errors
+   - Manually separate combined text
+   - Add missing analysis set if not in original SAP title
+
+**TLF list upload logic**
+
+When TLF list is uploaded:
+
+1. If uploaded file contains separate columns (title, subtitle, analysis_set):
+   - Use directly
+2. If uploaded file contains only complete title strings:
+   - Apply same parsing logic as SAP extraction
+   - Flag low-confidence parses for user review
+
+**Shell generation logic**
+
+When generating individual shells:
+
+1. Inherit parsed title components from approved TLF list row
+2. If analysis set is missing:
+   - Check global requirements for section default
+   - Extract from SAP content for this specific shell
+   - AI suggests based on shell type and context
+   - Flag as "TBD - needs user confirmation"
+3. Allow user to override any component during shell review
+
+**Rendering and display**
+
+Rendered preview and export must show:
+Table [number]: [title]
+[subtitle] (if present)
+([analysis_set])
+
+
+**Component precedence**
+
+For each component:
+1. User explicit override (highest priority)
+2. Approved TLF list parsed value
+3. SAP explicit content for this shell
+4. Global requirements section default (analysis set only)
+5. AI reasoning from context (lowest priority, must be flagged)
+
+**Validation and warnings**
+
+System should:
+- Warn if analysis set is missing or unclear
+- Warn if parsing confidence is low
+- Flag analysis sets that don't match known population types from protocol
+- Allow bulk editing of analysis sets across multiple TLFs in same section
 
 ### 3.2 Phase 2+ (Future)
 

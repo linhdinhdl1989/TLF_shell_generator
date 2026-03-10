@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   ArrowLeft,
   FileText,
@@ -11,20 +11,24 @@ import {
   Plus,
   Trash2,
   Check,
-  ChevronDown,
   MessageSquare,
   Send,
   Eye,
-  Edit2,
   X,
   AlertCircle,
   Loader2,
   Table,
   Bot,
   GripVertical,
+  Save,
+  Sparkles,
 } from "lucide-react";
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+// ─── API base ─────────────────────────────────────────────────────────────────
+
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+
+// ─── Mock Data (Tabs 1-3) ─────────────────────────────────────────────────────
 
 const INITIAL_DOCS = [
   { id: 1, name: "SAP_XYZ101_v2.pdf", type: "sap", status: "ready", size: "2.4 MB" },
@@ -65,64 +69,7 @@ const INITIAL_GLOBAL_REQS = [
   },
 ];
 
-const INITIAL_SHELLS = [
-  {
-    id: 1,
-    number: "14.1.1",
-    title: "Demographics and Baseline Characteristics",
-    status: "generated",
-    population: "Safety Analysis Set",
-    columns: [
-      { id: 1, label: "Characteristic", width: 200 },
-      { id: 2, label: "Placebo (N=xx)", width: 140 },
-      { id: 3, label: "Treatment (N=xx)", width: 140 },
-      { id: 4, label: "Total (N=xx)", width: 120 },
-    ],
-    rows: [
-      { id: 1, indent: 0, label: "Age (years)", isHeader: false },
-      { id: 2, indent: 1, label: "n", isHeader: false },
-      { id: 3, indent: 1, label: "Mean (SD)", isHeader: false },
-      { id: 4, indent: 1, label: "Median", isHeader: false },
-      { id: 5, indent: 1, label: "Min, Max", isHeader: false },
-      { id: 6, indent: 0, label: "Sex, n (%)", isHeader: false },
-      { id: 7, indent: 1, label: "Male", isHeader: false },
-      { id: 8, indent: 1, label: "Female", isHeader: false },
-      { id: 9, indent: 0, label: "Race, n (%)", isHeader: false },
-      { id: 10, indent: 1, label: "White", isHeader: false },
-      { id: 11, indent: 1, label: "Black or African American", isHeader: false },
-      { id: 12, indent: 1, label: "Asian", isHeader: false },
-      { id: 13, indent: 1, label: "Other", isHeader: false },
-    ],
-    footnotes: [
-      "Note: All summaries are based on the Safety Analysis Set (or specify analysis set as appropriate).",
-      "Note: Continuous variables are summarized using n, mean (SD), median, minimum, and maximum.",
-      "Note: Categorical variables are summarized using counts (n) and percentages (%).",
-      "Note: Percentages are based on the number of subjects in the respective treatment group.",
-    ],
-  },
-  {
-    id: 2,
-    number: "14.3.1.1",
-    title: "Adverse Events – Overview",
-    status: "pending",
-    population: "Safety Analysis Set",
-    columns: [
-      { id: 1, label: "Parameter", width: 220 },
-      { id: 2, label: "Placebo (N=xx)", width: 140 },
-      { id: 3, label: "Treatment (N=xx)", width: 140 },
-    ],
-    rows: [
-      { id: 1, indent: 0, label: "Subjects with any AE, n (%)", isHeader: false },
-      { id: 2, indent: 0, label: "Subjects with any SAE, n (%)", isHeader: false },
-      { id: 3, indent: 0, label: "Subjects who discontinued due to AE, n (%)", isHeader: false },
-      { id: 4, indent: 0, label: "Subjects with any TEAE, n (%)", isHeader: false },
-      { id: 5, indent: 0, label: "Deaths, n (%)", isHeader: false },
-    ],
-    footnotes: ["TEAE = Treatment-Emergent Adverse Event; SAE = Serious Adverse Event."],
-  },
-];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers / constants ──────────────────────────────────────────────────────
 
 const STATUS_COLORS = {
   uploading: "bg-yellow-100 text-yellow-700",
@@ -178,19 +125,12 @@ function DocumentsTab() {
         size: `${(file.size / 1024).toFixed(0)} KB`,
       };
       setDocs((prev) => [...prev, newDoc]);
-      // Simulate status progression
       setTimeout(
-        () =>
-          setDocs((prev) =>
-            prev.map((d) => (d.id === newDoc.id ? { ...d, status: "processing" } : d))
-          ),
+        () => setDocs((prev) => prev.map((d) => (d.id === newDoc.id ? { ...d, status: "processing" } : d))),
         800
       );
       setTimeout(
-        () =>
-          setDocs((prev) =>
-            prev.map((d) => (d.id === newDoc.id ? { ...d, status: "ready" } : d))
-          ),
+        () => setDocs((prev) => prev.map((d) => (d.id === newDoc.id ? { ...d, status: "ready" } : d))),
         2500
       );
     });
@@ -207,17 +147,13 @@ function DocumentsTab() {
   const reParse = (id) => {
     setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, status: "processing" } : d)));
     setTimeout(
-      () =>
-        setDocs((prev) =>
-          prev.map((d) => (d.id === id ? { ...d, status: "ready" } : d))
-        ),
+      () => setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, status: "ready" } : d))),
       1500
     );
   };
 
   return (
     <div className="space-y-6">
-      {/* Upload Zone */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
           <Upload size={18} className="text-indigo-500" />
@@ -232,9 +168,7 @@ function DocumentsTab() {
               className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
             >
               {DOC_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t.replace(/_/g, " ").toUpperCase()}
-                </option>
+                <option key={t} value={t}>{t.replace(/_/g, " ").toUpperCase()}</option>
               ))}
             </select>
           </div>
@@ -244,37 +178,27 @@ function DocumentsTab() {
           >
             <Upload size={14} /> Choose File
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={(e) => handleFiles(e.target.files)}
-          />
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => handleFiles(e.target.files)} />
         </div>
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
           className={`border-2 border-dashed rounded-xl p-8 text-center transition cursor-pointer ${
-            dragOver
-              ? "border-indigo-400 bg-indigo-50"
-              : "border-gray-300 hover:border-indigo-300 hover:bg-gray-50"
+            dragOver ? "border-indigo-400 bg-indigo-50" : "border-gray-300 hover:border-indigo-300 hover:bg-gray-50"
           }`}
           onClick={() => fileInputRef.current?.click()}
         >
           <Upload size={32} className="mx-auto text-gray-400 mb-2" />
           <p className="text-gray-500 text-sm">
-            Drag & drop files here, or{" "}
-            <span className="text-indigo-600 font-medium">browse</span>
+            Drag & drop files here, or <span className="text-indigo-600 font-medium">browse</span>
           </p>
           <p className="text-gray-400 text-xs mt-1">PDF, Word, Excel supported</p>
         </div>
       </div>
 
-      {/* Document List */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-gray-100">
           <h3 className="font-semibold text-gray-800">Uploaded Documents ({docs.length})</h3>
         </div>
         {docs.length === 0 ? (
@@ -288,29 +212,19 @@ function DocumentsTab() {
                   <p className="text-sm font-medium text-gray-800 truncate">{doc.name}</p>
                   <p className="text-xs text-gray-400">{doc.size}</p>
                 </div>
-                {/* Type dropdown */}
                 <select
                   value={doc.type}
-                  onChange={(e) =>
-                    setDocs((prev) =>
-                      prev.map((d) => (d.id === doc.id ? { ...d, type: e.target.value } : d))
-                    )
-                  }
+                  onChange={(e) => setDocs((prev) => prev.map((d) => (d.id === doc.id ? { ...d, type: e.target.value } : d)))}
                   className="text-xs border border-gray-200 rounded-md px-2 py-1 text-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 >
                   {DOC_TYPES.map((t) => (
                     <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
                   ))}
                 </select>
-                {/* Status */}
                 <div className="flex items-center gap-1.5">
                   <StatusIcon status={doc.status} />
-                  <Badge
-                    label={doc.status}
-                    colorClass={STATUS_COLORS[doc.status] || "bg-gray-100 text-gray-600"}
-                  />
+                  <Badge label={doc.status} colorClass={STATUS_COLORS[doc.status] || "bg-gray-100 text-gray-600"} />
                 </div>
-                {/* Actions */}
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => reParse(doc.id)}
@@ -356,16 +270,7 @@ function TLFTab() {
   const chatEndRef = useRef(null);
 
   const addRow = () => {
-    setTlfs((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        number: "",
-        title: "",
-        section: "demographics",
-        status: "proposed",
-      },
-    ]);
+    setTlfs((prev) => [...prev, { id: Date.now(), number: "", title: "", section: "demographics", status: "proposed" }]);
   };
 
   const updateTlf = (id, field, value) => {
@@ -384,20 +289,8 @@ function TLFTab() {
     setTimeout(() => {
       setTlfs((prev) => [
         ...prev,
-        {
-          id: Date.now() + 1,
-          number: "14.3.3.1",
-          title: "Adverse Events by System Organ Class (AI Extracted)",
-          section: "safety",
-          status: "proposed",
-        },
-        {
-          id: Date.now() + 2,
-          number: "14.5.1",
-          title: "Prior and Concomitant Medications (AI Extracted)",
-          section: "safety",
-          status: "proposed",
-        },
+        { id: Date.now() + 1, number: "14.3.3.1", title: "Adverse Events by System Organ Class (AI Extracted)", section: "safety", status: "proposed" },
+        { id: Date.now() + 2, number: "14.5.1", title: "Prior and Concomitant Medications (AI Extracted)", section: "safety", status: "proposed" },
       ]);
       setIsAiLoading(false);
     }, 1500);
@@ -409,20 +302,13 @@ function TLFTab() {
     setChatMessages((prev) => [...prev, userMsg]);
     setChatInput("");
     setIsAiLoading(true);
-
     setTimeout(() => {
       let reply = "I've noted your request. Please review the updated TLF list above.";
       const lower = chatInput.toLowerCase();
       if (lower.includes("ae by soc") || lower.includes("adverse event")) {
         setTlfs((prev) => [
           ...prev,
-          {
-            id: Date.now(),
-            number: "14.3.1.3",
-            title: "Adverse Events by System Organ Class and Preferred Term",
-            section: "safety",
-            status: "proposed",
-          },
+          { id: Date.now(), number: "14.3.1.3", title: "Adverse Events by System Organ Class and Preferred Term", section: "safety", status: "proposed" },
         ]);
         reply = "Added: 'Adverse Events by System Organ Class and Preferred Term' as Table 14.3.1.3.";
       } else if (lower.includes("remove") || lower.includes("delete")) {
@@ -436,7 +322,6 @@ function TLFTab() {
 
   return (
     <div className="space-y-6">
-      {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={extractFromSAP}
@@ -446,21 +331,14 @@ function TLFTab() {
           {isAiLoading ? <Loader2 size={14} className="animate-spin" /> : <Bot size={14} />}
           AI Extract from SAP
         </button>
-        <button
-          onClick={addRow}
-          className="flex items-center gap-2 border border-gray-300 text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-50 transition"
-        >
+        <button onClick={addRow} className="flex items-center gap-2 border border-gray-300 text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-50 transition">
           <Plus size={14} /> Add Row
         </button>
-        <button
-          onClick={approveAll}
-          className="flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-green-700 transition ml-auto"
-        >
+        <button onClick={approveAll} className="flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-green-700 transition ml-auto">
           <Check size={14} /> Approve List
         </button>
       </div>
 
-      {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -503,11 +381,7 @@ function TLFTab() {
                   </select>
                 </td>
                 <td className="px-4 py-2">
-                  <span
-                    className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                      TLF_STATUS_COLORS[row.status] || "bg-gray-100 text-gray-600"
-                    }`}
-                  >
+                  <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${TLF_STATUS_COLORS[row.status] || "bg-gray-100 text-gray-600"}`}>
                     {row.status}
                   </span>
                 </td>
@@ -525,7 +399,6 @@ function TLFTab() {
         </table>
       </div>
 
-      {/* AI Chatbox */}
       <div className="bg-white rounded-xl border border-gray-200">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
           <MessageSquare size={16} className="text-indigo-500" />
@@ -533,17 +406,8 @@ function TLFTab() {
         </div>
         <div className="h-40 overflow-y-auto px-4 py-3 space-y-2">
           {chatMessages.map((msg, i) => (
-            <div
-              key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-xs text-sm px-3 py-2 rounded-xl ${
-                  msg.role === "user"
-                    ? "bg-indigo-600 text-white rounded-br-none"
-                    : "bg-gray-100 text-gray-700 rounded-bl-none"
-                }`}
-              >
+            <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-xs text-sm px-3 py-2 rounded-xl ${msg.role === "user" ? "bg-indigo-600 text-white rounded-br-none" : "bg-gray-100 text-gray-700 rounded-bl-none"}`}>
                 {msg.text}
               </div>
             </div>
@@ -589,30 +453,18 @@ function GlobalRequirementsTab() {
   };
 
   const addColumn = (id) => {
-    setSections((prev) =>
-      prev.map((s) =>
-        s.id === id ? { ...s, columns: [...s.columns, "New Column"] } : s
-      )
-    );
+    setSections((prev) => prev.map((s) => (s.id === id ? { ...s, columns: [...s.columns, "New Column"] } : s)));
   };
 
   const updateColumn = (sectionId, colIdx, value) => {
     setSections((prev) =>
-      prev.map((s) =>
-        s.id === sectionId
-          ? { ...s, columns: s.columns.map((c, i) => (i === colIdx ? value : c)) }
-          : s
-      )
+      prev.map((s) => (s.id === sectionId ? { ...s, columns: s.columns.map((c, i) => (i === colIdx ? value : c)) } : s))
     );
   };
 
   const removeColumn = (sectionId, colIdx) => {
     setSections((prev) =>
-      prev.map((s) =>
-        s.id === sectionId
-          ? { ...s, columns: s.columns.filter((_, i) => i !== colIdx) }
-          : s
-      )
+      prev.map((s) => (s.id === sectionId ? { ...s, columns: s.columns.filter((_, i) => i !== colIdx) } : s))
     );
   };
 
@@ -622,13 +474,7 @@ function GlobalRequirementsTab() {
     if (!newSectionName.trim()) return;
     setSections((prev) => [
       ...prev,
-      {
-        id: Date.now(),
-        name: newSectionName.trim(),
-        numberPattern: "14.x",
-        titleTemplate: "Table {number}: {title}",
-        columns: ["Parameter", "Value"],
-      },
+      { id: Date.now(), name: newSectionName.trim(), numberPattern: "14.x", titleTemplate: "Table {number}: {title}", columns: ["Parameter", "Value"] },
     ]);
     setNewSectionName("");
   };
@@ -641,13 +487,8 @@ function GlobalRequirementsTab() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <p className="text-sm text-gray-500">
-          Define shell structure templates per section. These apply to all shells in that section.
-        </p>
-        <button
-          onClick={saveAll}
-          className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
-        >
+        <p className="text-sm text-gray-500">Define shell structure templates per section. These apply to all shells in that section.</p>
+        <button onClick={saveAll} className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
           <Check size={14} /> Save Requirements
         </button>
       </div>
@@ -659,20 +500,14 @@ function GlobalRequirementsTab() {
               <Settings size={16} className="text-indigo-500" />
               <span className="font-semibold text-gray-800">{section.name}</span>
             </div>
-            <button
-              onClick={() => removeSection(section.id)}
-              className="p-1.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition"
-            >
+            <button onClick={() => removeSection(section.id)} className="p-1.5 rounded hover:bg-red-50 text-gray-400 hover:text-red-500 transition">
               <X size={14} />
             </button>
           </div>
           <div className="px-6 py-5 space-y-5">
-            {/* Pattern & Template */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Number Pattern
-                </label>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Number Pattern</label>
                 <input
                   value={section.numberPattern}
                   onChange={(e) => updateSection(section.id, "numberPattern", e.target.value)}
@@ -681,9 +516,7 @@ function GlobalRequirementsTab() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Title Template
-                </label>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Title Template</label>
                 <input
                   value={section.titleTemplate}
                   onChange={(e) => updateSection(section.id, "titleTemplate", e.target.value)}
@@ -692,12 +525,8 @@ function GlobalRequirementsTab() {
                 />
               </div>
             </div>
-
-            {/* Columns */}
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-2">
-                Column Headers
-              </label>
+              <label className="block text-xs font-medium text-gray-600 mb-2">Column Headers</label>
               <div className="flex flex-wrap gap-2">
                 {section.columns.map((col, idx) => (
                   <div key={idx} className="flex items-center gap-1 bg-gray-100 rounded-lg px-2 py-1">
@@ -707,10 +536,7 @@ function GlobalRequirementsTab() {
                       className="text-xs bg-transparent border-none outline-none w-28 text-gray-700"
                     />
                     {section.columns.length > 1 && (
-                      <button
-                        onClick={() => removeColumn(section.id, idx)}
-                        className="text-gray-400 hover:text-red-500 transition"
-                      >
+                      <button onClick={() => removeColumn(section.id, idx)} className="text-gray-400 hover:text-red-500 transition">
                         <X size={10} />
                       </button>
                     )}
@@ -724,8 +550,6 @@ function GlobalRequirementsTab() {
                 </button>
               </div>
             </div>
-
-            {/* Preview Table */}
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-2 flex items-center gap-1">
                 <Eye size={12} /> Preview
@@ -735,12 +559,7 @@ function GlobalRequirementsTab() {
                   <thead>
                     <tr className="bg-gray-50">
                       {section.columns.map((col, i) => (
-                        <th
-                          key={i}
-                          className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap"
-                        >
-                          {col}
-                        </th>
+                        <th key={i} className="px-3 py-2 text-left font-semibold text-gray-700 border-b border-gray-200 whitespace-nowrap">{col}</th>
                       ))}
                     </tr>
                   </thead>
@@ -768,7 +587,6 @@ function GlobalRequirementsTab() {
         </div>
       ))}
 
-      {/* Add Section */}
       <div className="bg-white rounded-xl border border-dashed border-gray-300 px-6 py-4">
         <div className="flex gap-3 items-center">
           <input
@@ -791,379 +609,675 @@ function GlobalRequirementsTab() {
   );
 }
 
-// ─── Tab 4: AI Shells ─────────────────────────────────────────────────────────
+// ─── Tab 4: AI Shells (backend-wired) ────────────────────────────────────────
 
-function AIShellsTab() {
-  const [shells, setShells] = useState(INITIAL_SHELLS);
-  const [selectedId, setSelectedId] = useState(INITIAL_SHELLS[0].id);
+function AIShellsTab({ studyId }) {
+  // ── State ──
+  const [shells, setShells] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [loadingShells, setLoadingShells] = useState(true);
+  const [shellsError, setShellsError] = useState(null);
+
+  // save-state: "idle" | "saving" | "saved" | "error"
+  const [saveState, setSaveState] = useState("idle");
+
+  // per-shell chat history: { [shellId]: [{role, text}] }
+  const [chatByShellId, setChatByShellId] = useState({});
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState([
-    {
-      role: "assistant",
-      text: "Shell editor ready. Ask me to add rows, change columns, adjust footnotes, or update the population.",
-    },
-  ]);
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [editingCell, setEditingCell] = useState(null); // {type, id, field}
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [chatError, setChatError] = useState(null);
+
   const chatEndRef = useRef(null);
+  const saveTimerRef = useRef(null);
 
-  const selected = shells.find((s) => s.id === selectedId);
+  // ── Derived ──
+  const activeShell = useMemo(() => shells.find((s) => s.id === selectedId) || null, [shells, selectedId]);
+  const chatMessages = chatByShellId[selectedId] || [
+    { role: "assistant", text: "Shell editor ready. Ask me to refine the title, suggest rows, add footnotes, or update the population." },
+  ];
 
-  const updateShell = (field, value) => {
-    setShells((prev) =>
-      prev.map((s) => (s.id === selectedId ? { ...s, [field]: value } : s))
-    );
-  };
+  // ── Load shells on mount ──
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingShells(true);
+    setShellsError(null);
 
+    fetch(`${API_BASE}/studies/${studyId}/shells`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Server error ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray(data) ? data : [];
+        setShells(list);
+        if (list.length > 0) setSelectedId(list[0].id);
+        setLoadingShells(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setShellsError(err.message || "Failed to load shells");
+        setLoadingShells(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [studyId]);
+
+  // ── Scroll chat to bottom on new messages ──
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatByShellId, selectedId, isChatLoading]);
+
+  // ── Cleanup debounce timer on unmount ──
+  useEffect(() => {
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, []);
+
+  // ── Persist shell to backend (debounced 600 ms) ──
+  const persistShell = useCallback(
+    (updatedShell) => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      setSaveState("saving");
+      saveTimerRef.current = setTimeout(() => {
+        fetch(`${API_BASE}/studies/${studyId}/shells/${updatedShell.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updatedShell),
+        })
+          .then((r) => {
+            if (!r.ok) throw new Error(`Save failed (${r.status})`);
+            setSaveState("saved");
+            setTimeout(() => setSaveState("idle"), 2000);
+          })
+          .catch(() => {
+            setSaveState("error");
+            setTimeout(() => setSaveState("idle"), 3000);
+          });
+      }, 600);
+    },
+    [studyId]
+  );
+
+  // ── Update active shell field(s), optimistic + debounced save ──
+  const updateActiveShell = useCallback(
+    (patch) => {
+      setShells((prev) =>
+        prev.map((s) => {
+          if (s.id !== selectedId) return s;
+          const updated = { ...s, ...patch };
+          persistShell(updated);
+          return updated;
+        })
+      );
+    },
+    [selectedId, persistShell]
+  );
+
+  // ── Row helpers ──
   const addRow = () => {
-    const newRow = { id: Date.now(), indent: 0, label: "New Row", isHeader: false };
-    updateShell("rows", [...selected.rows, newRow]);
+    if (!activeShell) return;
+    const newRow = { id: Date.now(), label: "New Row", indent: 0, isHeader: false };
+    updateActiveShell({ rows: [...activeShell.rows, newRow] });
   };
 
-  const updateRow = (rowId, field, value) => {
-    updateShell(
-      "rows",
-      selected.rows.map((r) => (r.id === rowId ? { ...r, [field]: value } : r))
-    );
+  const deleteRow = (rowId) => {
+    if (!activeShell) return;
+    updateActiveShell({ rows: activeShell.rows.filter((r) => r.id !== rowId) });
   };
 
-  const removeRow = (rowId) => {
-    updateShell("rows", selected.rows.filter((r) => r.id !== rowId));
+  const updateRow = (rowId, patch) => {
+    if (!activeShell) return;
+    updateActiveShell({ rows: activeShell.rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)) });
   };
 
+  // ── Column helpers ──
   const addColumn = () => {
+    if (!activeShell) return;
     const newCol = { id: Date.now(), label: "New Column", width: 120 };
-    updateShell("columns", [...selected.columns, newCol]);
+    updateActiveShell({ columns: [...activeShell.columns, newCol] });
   };
 
-  const updateColumn = (colId, field, value) => {
-    updateShell(
-      "columns",
-      selected.columns.map((c) => (c.id === colId ? { ...c, [field]: value } : c))
-    );
+  const deleteColumn = (colId) => {
+    if (!activeShell) return;
+    updateActiveShell({ columns: activeShell.columns.filter((c) => c.id !== colId) });
   };
 
-  const removeColumn = (colId) => {
-    updateShell("columns", selected.columns.filter((c) => c.id !== colId));
+  const updateColumn = (colId, patch) => {
+    if (!activeShell) return;
+    updateActiveShell({ columns: activeShell.columns.map((c) => (c.id === colId ? { ...c, ...patch } : c)) });
   };
 
-  const approveShell = () => {
-    updateShell("status", "approved");
-    console.log("Shell approved:", selected);
+  // ── Add new shell via POST ──
+  const addShell = async () => {
+    const payload = {
+      type: "table",
+      title: "New Shell",
+      population: "Analysis Set",
+      columns: [
+        { id: 1, label: "Parameter", width: 200 },
+        { id: 2, label: "Value", width: 140 },
+      ],
+      rows: [{ id: 1, label: "Row 1", indent: 0, isHeader: false }],
+      footnotes: [],
+    };
+    try {
+      const r = await fetch(`${API_BASE}/studies/${studyId}/shells`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) throw new Error(`Create failed (${r.status})`);
+      const created = await r.json();
+      setShells((prev) => [...prev, created]);
+      setSelectedId(created.id);
+    } catch (err) {
+      setShellsError(err.message || "Failed to create shell");
+      setTimeout(() => setShellsError(null), 4000);
+    }
   };
 
-  const sendChat = () => {
-    if (!chatInput.trim() || !selected) return;
-    const userMsg = { role: "user", text: chatInput };
-    setChatMessages((prev) => [...prev, userMsg]);
-    const input = chatInput;
-    setChatInput("");
-    setIsAiLoading(true);
+  // ── AI actions via backend chat ──
+  const handleAiAction = useCallback(
+    async (actionType, customPrompt) => {
+      if (!activeShell || isChatLoading) return;
 
-    setTimeout(() => {
-      let reply = "I've noted your request and updated the shell accordingly.";
-      const lower = input.toLowerCase();
-
-      if (lower.includes("add row") || lower.includes("add variable")) {
-        const match = input.match(/[""']?([A-Za-z\s]+)[""']?(?:\s+variable|\s+row)?$/i);
-        const label = match?.[1]?.trim() || "New Variable";
-        updateShell("rows", [
-          ...selected.rows,
-          { id: Date.now(), indent: 0, label, isHeader: false },
-        ]);
-        reply = `Added row: "${label}"`;
-      } else if (lower.includes("footnote") || lower.includes("note:")) {
-        const note = input.replace(/^(add\s+)?(footnote|note)[:\s]*/i, "").trim();
-        updateShell("footnotes", [...(selected.footnotes || []), note || "New footnote"]);
-        reply = "Footnote added.";
-      } else if (lower.includes("population")) {
-        const pop = input.replace(/^(set|change)\s+(the\s+)?population\s+(to\s+)?/i, "").trim();
-        if (pop) {
-          updateShell("population", pop);
-          reply = `Population updated to: "${pop}"`;
-        }
-      } else if (lower.includes("add column")) {
-        addColumn();
-        reply = "New column added. Click the column header to rename it.";
+      let prompt = customPrompt || "";
+      if (actionType === "refine_title") {
+        prompt = `Refine this clinical TLF shell title to be concise and regulatory-ready: "${activeShell.title}". Return only the improved title text.`;
+      } else if (actionType === "suggest_rows") {
+        prompt = `Suggest appropriate row stubs for a clinical ${activeShell.type || "table"} shell titled "${activeShell.title}" with population "${activeShell.population}". Return a numbered list of row labels.`;
       }
 
-      setChatMessages((prev) => [...prev, { role: "assistant", text: reply }]);
-      setIsAiLoading(false);
-      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-    }, 1000);
+      if (!prompt.trim()) return;
+
+      const userMsg = { role: "user", text: actionType === "refine_title" ? "Refine title" : actionType === "suggest_rows" ? "Suggest rows" : prompt };
+      setChatByShellId((prev) => ({
+        ...prev,
+        [selectedId]: [...(prev[selectedId] || [chatMessages[0]]), userMsg],
+      }));
+      setChatInput("");
+      setChatError(null);
+      setIsChatLoading(true);
+
+      try {
+        const r = await fetch(`${API_BASE}/studies/${studyId}/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: "shell", target_id: String(activeShell.id), prompt }),
+        });
+        if (!r.ok) throw new Error(`Chat error (${r.status})`);
+        const data = await r.json();
+        const aiMsg = { role: "assistant", text: data.text || data.message || "Done." };
+        setChatByShellId((prev) => ({
+          ...prev,
+          [selectedId]: [...(prev[selectedId] || [chatMessages[0]]), userMsg, aiMsg],
+        }));
+        // If action type was refine_title and response looks like a title, apply it
+        if (actionType === "refine_title" && data.text && data.text.length < 200) {
+          updateActiveShell({ title: data.text.replace(/^["']|["']$/g, "").trim() });
+        }
+      } catch (err) {
+        setChatError(err.message || "Chat request failed");
+        setChatByShellId((prev) => ({
+          ...prev,
+          [selectedId]: [
+            ...(prev[selectedId] || [chatMessages[0]]),
+            userMsg,
+            { role: "assistant", text: "Sorry, I couldn't reach the AI assistant. Please try again." },
+          ],
+        }));
+      } finally {
+        setIsChatLoading(false);
+      }
+    },
+    [activeShell, isChatLoading, selectedId, studyId, chatMessages, updateActiveShell]
+  );
+
+  const sendChat = () => {
+    if (!chatInput.trim() || isChatLoading) return;
+    handleAiAction("generic", chatInput);
   };
 
+  // ── Export JSON ──
+  const exportMock = () => {
+    const json = JSON.stringify(shells, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `shells_study_${studyId}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Save-state badge ──
+  const SaveBadge = () => {
+    if (saveState === "saving")
+      return (
+        <span className="flex items-center gap-1 text-xs text-amber-600 font-medium">
+          <Loader2 size={11} className="animate-spin" /> Saving…
+        </span>
+      );
+    if (saveState === "saved")
+      return (
+        <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+          <Check size={11} /> Saved
+        </span>
+      );
+    if (saveState === "error")
+      return (
+        <span className="flex items-center gap-1 text-xs text-red-500 font-medium">
+          <AlertCircle size={11} /> Save failed
+        </span>
+      );
+    return null;
+  };
+
+  // ── Loading / error states ──
+  if (loadingShells) {
+    return (
+      <div className="flex items-center justify-center h-64 text-gray-400 gap-2">
+        <Loader2 size={20} className="animate-spin" />
+        <span className="text-sm">Loading shells…</span>
+      </div>
+    );
+  }
+
+  // ── Render ──
   return (
-    <div className="flex gap-6 min-h-[600px]">
-      {/* Sidebar – Shell List */}
-      <div className="w-64 flex-shrink-0 bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col">
+    <div className="flex gap-0 xl:gap-5 flex-col xl:flex-row min-h-[680px]">
+      {/* ── Left sidebar: shell list ── */}
+      <div className="xl:w-60 flex-shrink-0 bg-white rounded-xl border border-gray-200 overflow-hidden flex flex-col mb-4 xl:mb-0">
         <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-          <span className="font-semibold text-gray-700 text-sm">Shells ({shells.length})</span>
-          <button
-            onClick={() => {
-              const newShell = {
-                id: Date.now(),
-                number: "xx.x.x",
-                title: "New Shell",
-                status: "pending",
-                population: "Analysis Set",
-                columns: [
-                  { id: 1, label: "Parameter", width: 200 },
-                  { id: 2, label: "Value", width: 140 },
-                ],
-                rows: [{ id: 1, indent: 0, label: "Row 1", isHeader: false }],
-                footnotes: [],
-              };
-              setShells((prev) => [...prev, newShell]);
-              setSelectedId(newShell.id);
-            }}
-            className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
-          {shells.map((shell) => (
+          <span className="font-semibold text-gray-700 text-sm">Shells{shells.length > 0 ? ` (${shells.length})` : ""}</span>
+          <div className="flex gap-1">
             <button
-              key={shell.id}
-              onClick={() => setSelectedId(shell.id)}
-              className={`w-full text-left px-4 py-3 hover:bg-indigo-50 transition ${
-                shell.id === selectedId ? "bg-indigo-50 border-l-2 border-indigo-500" : ""
-              }`}
+              onClick={exportMock}
+              title="Export shells as JSON"
+              disabled={shells.length === 0}
+              className="p-1.5 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 disabled:opacity-40 transition"
             >
-              <p className="text-xs font-mono font-semibold text-indigo-600">{shell.number}</p>
-              <p className="text-xs text-gray-700 mt-0.5 line-clamp-2">{shell.title}</p>
-              <div className="mt-1.5">
-                <span
-                  className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${
-                    SHELL_STATUS_COLORS[shell.status] || "bg-gray-100 text-gray-500"
-                  }`}
-                >
-                  {shell.status === "generated" ? "✓ GENERATED" : shell.status.toUpperCase()}
-                </span>
-              </div>
+              <Download size={14} />
             </button>
-          ))}
+            <button
+              onClick={addShell}
+              title="Add shell"
+              className="p-1.5 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+
+        {shellsError && (
+          <div className="mx-3 mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+            <AlertCircle size={13} className="text-red-500 mt-0.5 flex-shrink-0" />
+            <p className="text-xs text-red-600">{shellsError}</p>
+          </div>
+        )}
+
+        <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+          {shells.length === 0 ? (
+            <div className="p-6 text-center text-gray-400 text-xs">
+              No shells yet.
+              <button onClick={addShell} className="block mt-2 mx-auto text-indigo-600 hover:underline text-xs font-medium">
+                + Add first shell
+              </button>
+            </div>
+          ) : (
+            shells.map((shell) => (
+              <button
+                key={shell.id}
+                onClick={() => setSelectedId(shell.id)}
+                className={`w-full text-left px-4 py-3 hover:bg-indigo-50 transition ${
+                  shell.id === selectedId ? "bg-indigo-50 border-l-[3px] border-indigo-500" : "border-l-[3px] border-transparent"
+                }`}
+              >
+                <p className="text-xs font-mono font-semibold text-indigo-600 truncate">{shell.tlf_id || shell.id}</p>
+                <p className="text-xs text-gray-700 mt-0.5 line-clamp-2 leading-snug">{shell.title}</p>
+                <div className="mt-1.5">
+                  <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${SHELL_STATUS_COLORS[shell.status] || "bg-gray-100 text-gray-500"}`}>
+                    {shell.status === "generated" ? "✓ GENERATED" : (shell.status || "PENDING").toUpperCase()}
+                  </span>
+                </div>
+              </button>
+            ))
+          )}
         </div>
       </div>
 
-      {/* Main Editor */}
-      {selected ? (
-        <div className="flex-1 flex flex-col gap-4 min-w-0">
-          {/* Shell Header */}
-          <div className="bg-white rounded-xl border border-gray-200 px-6 py-4 flex items-start justify-between gap-4 flex-wrap">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
-                  {selected.number}
-                </span>
-                <Badge
-                  label={selected.status === "generated" ? "✓ GENERATED" : selected.status.toUpperCase()}
-                  colorClass={SHELL_STATUS_COLORS[selected.status] || "bg-gray-100 text-gray-500"}
-                />
-              </div>
+      {/* ── Center + Right ── */}
+      {activeShell ? (
+        <div className="flex-1 flex flex-col lg:flex-row gap-4 min-w-0">
+          {/* ── Center: editor ── */}
+          <div className="flex-1 flex flex-col gap-4 min-w-0">
+            {/* Top bar */}
+            <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-3 flex-wrap">
+              <span className="text-xs font-mono font-bold text-white bg-indigo-600 px-2 py-0.5 rounded">
+                {activeShell.tlf_id || activeShell.id}
+              </span>
               <input
-                value={selected.title}
-                onChange={(e) => updateShell("title", e.target.value)}
-                className="text-base font-semibold text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-indigo-400 outline-none w-full py-0.5"
+                value={activeShell.title}
+                onChange={(e) => updateActiveShell({ title: e.target.value })}
+                className="flex-1 min-w-0 font-semibold text-gray-800 text-sm bg-transparent border-b border-transparent hover:border-gray-300 focus:border-indigo-400 outline-none py-0.5"
+                placeholder="Shell title"
               />
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-xs text-gray-500">Population:</span>
-                <input
-                  value={selected.population}
-                  onChange={(e) => updateShell("population", e.target.value)}
-                  className="text-xs text-gray-600 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-indigo-400 outline-none"
-                />
-              </div>
-            </div>
-            <div className="flex gap-2">
+              <SaveBadge />
               <button
-                onClick={approveShell}
-                className="flex items-center gap-1.5 bg-green-600 text-white text-sm font-medium px-3 py-1.5 rounded-lg hover:bg-green-700 transition"
+                onClick={() => updateActiveShell({ status: "approved" })}
+                className="flex items-center gap-1.5 bg-green-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-green-700 transition"
               >
-                <Check size={13} /> Approve
+                <Check size={12} /> Approve
               </button>
             </div>
-          </div>
 
-          {/* Rendered Preview Table */}
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Table size={15} className="text-indigo-500" />
-                <span className="font-semibold text-gray-700 text-sm">Shell Preview</span>
+            {/* Header Information */}
+            <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+              <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Header Information</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Population</label>
+                  <input
+                    value={activeShell.population || ""}
+                    onChange={(e) => updateActiveShell({ population: e.target.value })}
+                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    placeholder="e.g. Safety Analysis Set"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Shell Type</label>
+                  <select
+                    value={activeShell.type || "table"}
+                    onChange={(e) => updateActiveShell({ type: e.target.value })}
+                    className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  >
+                    <option value="table">Table</option>
+                    <option value="listing">Listing</option>
+                    <option value="figure">Figure</option>
+                  </select>
+                </div>
               </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={addRow}
-                  className="flex items-center gap-1 border border-gray-300 text-xs px-2.5 py-1 rounded-md hover:bg-gray-50 transition"
-                >
-                  <Plus size={11} /> Row
-                </button>
+            </div>
+
+            {/* Column Definition */}
+            <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Column Definition</h4>
                 <button
                   onClick={addColumn}
-                  className="flex items-center gap-1 border border-gray-300 text-xs px-2.5 py-1 rounded-md hover:bg-gray-50 transition"
+                  className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium transition"
                 >
-                  <Plus size={11} /> Column
+                  <Plus size={12} /> Add Column
                 </button>
               </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b-2 border-gray-300">
-                    {selected.columns.map((col) => (
-                      <th key={col.id} className="px-4 py-2.5 text-left group">
-                        <div className="flex items-center gap-1">
-                          <input
-                            value={col.label}
-                            onChange={(e) => updateColumn(col.id, "label", e.target.value)}
-                            className="font-bold text-gray-800 bg-transparent border-b border-transparent hover:border-gray-400 focus:border-indigo-400 outline-none text-sm min-w-0 flex-1"
-                          />
-                          {selected.columns.length > 1 && (
-                            <button
-                              onClick={() => removeColumn(col.id)}
-                              className="text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100 flex-shrink-0"
-                            >
-                              <X size={11} />
-                            </button>
-                          )}
-                        </div>
-                      </th>
-                    ))}
-                    <th className="w-8"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selected.rows.map((row) => (
-                    <tr key={row.id} className="border-b border-gray-100 hover:bg-gray-50 group">
-                      <td className="px-4 py-1.5">
-                        <div
-                          className="flex items-center gap-1"
-                          style={{ paddingLeft: `${row.indent * 16}px` }}
-                        >
-                          <GripVertical size={12} className="text-gray-300 flex-shrink-0 cursor-grab" />
-                          <input
-                            value={row.label}
-                            onChange={(e) => updateRow(row.id, "label", e.target.value)}
-                            className={`bg-transparent border-b border-transparent hover:border-gray-300 focus:border-indigo-400 outline-none text-sm flex-1 min-w-0 ${
-                              row.isHeader ? "font-semibold" : ""
-                            }`}
-                          />
-                        </div>
-                      </td>
-                      {selected.columns.slice(1).map((col) => (
-                        <td key={col.id} className="px-4 py-1.5 text-gray-400 text-center text-xs italic">
-                          xx
-                        </td>
-                      ))}
-                      <td className="py-1.5 px-1">
-                        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
-                          <button
-                            onClick={() => updateRow(row.id, "indent", Math.max(0, row.indent - 1))}
-                            title="Decrease indent"
-                            className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-                          >
-                            ←
-                          </button>
-                          <button
-                            onClick={() => updateRow(row.id, "indent", Math.min(3, row.indent + 1))}
-                            title="Increase indent"
-                            className="p-0.5 rounded hover:bg-gray-200 text-gray-400 text-xs"
-                          >
-                            →
-                          </button>
-                          <button
-                            onClick={() => removeRow(row.id)}
-                            className="p-0.5 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition"
-                          >
-                            <Trash2 size={11} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Footnotes */}
-            {selected.footnotes?.length > 0 && (
-              <div className="px-4 pb-4 pt-2 border-t border-gray-100 space-y-1">
-                {selected.footnotes.map((fn, i) => (
-                  <div key={i} className="flex items-start gap-2 group">
-                    <p className="text-xs text-gray-500 italic flex-1">{fn}</p>
-                    <button
-                      onClick={() =>
-                        updateShell(
-                          "footnotes",
-                          selected.footnotes.filter((_, idx) => idx !== i)
-                        )
-                      }
-                      className="text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100 flex-shrink-0 mt-0.5"
-                    >
-                      <X size={11} />
-                    </button>
+              <div className="space-y-2">
+                {activeShell.columns.map((col, idx) => (
+                  <div key={col.id} className="flex items-center gap-3 group">
+                    <span className="text-xs text-gray-400 w-4 flex-shrink-0">{idx + 1}</span>
+                    <input
+                      value={col.label}
+                      onChange={(e) => updateColumn(col.id, { label: e.target.value })}
+                      className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      placeholder="Column label"
+                    />
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-gray-400">w:</span>
+                      <input
+                        type="number"
+                        value={col.width}
+                        onChange={(e) => updateColumn(col.id, { width: Number(e.target.value) })}
+                        className="w-16 text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        min={60}
+                        max={400}
+                      />
+                    </div>
+                    {activeShell.columns.length > 1 && (
+                      <button
+                        onClick={() => deleteColumn(col.id)}
+                        className="p-1 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition opacity-0 group-hover:opacity-100 flex-shrink-0"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+
+            {/* Content Rows */}
+            <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Content Rows</h4>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleAiAction("suggest_rows")}
+                    disabled={isChatLoading}
+                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium border border-indigo-200 px-2.5 py-1 rounded-lg hover:bg-indigo-50 transition disabled:opacity-50"
+                  >
+                    <Sparkles size={11} /> AI Suggestions
+                  </button>
+                  <button
+                    onClick={addRow}
+                    className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-medium transition"
+                  >
+                    <Plus size={12} /> Add Row
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                {activeShell.rows.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">No rows yet. Add one or ask AI for suggestions.</p>
+                ) : (
+                  activeShell.rows.map((row) => (
+                    <div
+                      key={row.id}
+                      className="flex items-center gap-2 group"
+                      style={{ paddingLeft: `${row.indent * 20}px` }}
+                    >
+                      <GripVertical size={12} className="text-gray-300 flex-shrink-0 cursor-grab" />
+                      <input
+                        type="checkbox"
+                        checked={row.isHeader}
+                        onChange={(e) => updateRow(row.id, { isHeader: e.target.checked })}
+                        title="Mark as header row"
+                        className="accent-indigo-600 flex-shrink-0"
+                      />
+                      <input
+                        value={row.label}
+                        onChange={(e) => updateRow(row.id, { label: e.target.value })}
+                        className={`flex-1 text-sm border border-gray-200 rounded-lg px-3 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                          row.isHeader ? "font-semibold bg-gray-50" : "bg-white"
+                        }`}
+                        placeholder="Row label"
+                      />
+                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
+                        <button
+                          onClick={() => updateRow(row.id, { indent: Math.max(0, row.indent - 1) })}
+                          title="Decrease indent"
+                          className="p-1 rounded hover:bg-gray-100 text-gray-400 text-xs"
+                        >
+                          ←
+                        </button>
+                        <button
+                          onClick={() => updateRow(row.id, { indent: Math.min(4, row.indent + 1) })}
+                          title="Increase indent"
+                          className="p-1 rounded hover:bg-gray-100 text-gray-400 text-xs"
+                        >
+                          →
+                        </button>
+                        <button
+                          onClick={() => deleteRow(row.id)}
+                          className="p-1 rounded hover:bg-red-50 text-gray-300 hover:text-red-500 transition"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
 
-          {/* AI Chatbox */}
-          <div className="bg-white rounded-xl border border-gray-200">
-            <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
-              <Bot size={15} className="text-indigo-500" />
-              <span className="font-semibold text-gray-700 text-sm">AI Shell Assistant</span>
+          {/* ── Right panel: preview + chat ── */}
+          <div className="lg:w-80 xl:w-96 flex-shrink-0 flex flex-col gap-4">
+            {/* Live Mock Output */}
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden flex-shrink-0">
+              <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                <Table size={14} className="text-indigo-500" />
+                <span className="font-semibold text-gray-700 text-sm">Live Mock Output</span>
+              </div>
+              <div className="overflow-x-auto p-3">
+                {/* Title block */}
+                <div className="mb-2 pb-2 border-b border-gray-300">
+                  <p className="text-xs font-semibold text-gray-800 leading-snug">{activeShell.title || "Untitled Shell"}</p>
+                  {activeShell.population && (
+                    <p className="text-xs text-gray-500 mt-0.5">{activeShell.population}</p>
+                  )}
+                </div>
+                {/* Table */}
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr>
+                      {activeShell.columns.map((col, i) => (
+                        <th
+                          key={col.id}
+                          className={`py-1.5 text-xs font-bold text-gray-800 border-b-2 border-gray-700 whitespace-nowrap ${i === 0 ? "text-left pr-3" : "text-center px-2"}`}
+                          style={{ minWidth: Math.min(col.width, 140) }}
+                        >
+                          {col.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeShell.rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={activeShell.columns.length} className="py-3 text-center text-gray-400 italic text-xs">
+                          No rows defined
+                        </td>
+                      </tr>
+                    ) : (
+                      activeShell.rows.map((row) => (
+                        <tr key={row.id} className="border-b border-gray-100">
+                          <td
+                            className={`py-1 text-xs pr-3 ${row.isHeader ? "font-semibold text-gray-800" : "text-gray-600"}`}
+                            style={{ paddingLeft: `${row.indent * 12 + 2}px` }}
+                          >
+                            {row.label || <span className="italic text-gray-400">—</span>}
+                          </td>
+                          {activeShell.columns.slice(1).map((col) => (
+                            <td key={col.id} className="py-1 text-center text-gray-400 px-2">
+                              {row.isHeader ? "" : "xx"}
+                            </td>
+                          ))}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+                {/* Footnotes */}
+                {activeShell.footnotes && activeShell.footnotes.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-gray-200 space-y-0.5">
+                    {activeShell.footnotes.map((fn, i) => (
+                      <p key={i} className="text-xs text-gray-500 italic leading-snug">{fn}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="h-36 overflow-y-auto px-4 py-3 space-y-2">
-              {chatMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+
+            {/* Statistical Assistant chat */}
+            <div className="bg-white rounded-xl border border-gray-200 flex flex-col flex-1 min-h-0">
+              <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+                <Bot size={14} className="text-indigo-500" />
+                <span className="font-semibold text-gray-700 text-sm">Statistical Assistant</span>
+              </div>
+
+              {/* Quick actions */}
+              <div className="px-3 pt-2 pb-1 flex gap-2 flex-wrap border-b border-gray-50">
+                <button
+                  onClick={() => handleAiAction("refine_title")}
+                  disabled={isChatLoading}
+                  className="text-xs border border-indigo-200 text-indigo-600 px-2.5 py-1 rounded-full hover:bg-indigo-50 transition disabled:opacity-50 font-medium"
                 >
-                  <div
-                    className={`max-w-sm text-xs px-3 py-2 rounded-xl ${
-                      msg.role === "user"
-                        ? "bg-indigo-600 text-white rounded-br-none"
-                        : "bg-gray-100 text-gray-700 rounded-bl-none"
-                    }`}
-                  >
-                    {msg.text}
+                  Refine Title
+                </button>
+                <button
+                  onClick={() => handleAiAction("suggest_rows")}
+                  disabled={isChatLoading}
+                  className="text-xs border border-indigo-200 text-indigo-600 px-2.5 py-1 rounded-full hover:bg-indigo-50 transition disabled:opacity-50 font-medium"
+                >
+                  Suggest Rows
+                </button>
+              </div>
+
+              {/* Chat history */}
+              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2 min-h-[160px] max-h-64">
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[85%] text-xs px-3 py-2 rounded-xl leading-relaxed ${
+                        msg.role === "user"
+                          ? "bg-indigo-600 text-white rounded-br-none"
+                          : "bg-gray-100 text-gray-700 rounded-bl-none"
+                      }`}
+                    >
+                      {msg.text}
+                    </div>
                   </div>
-                </div>
-              ))}
-              {isAiLoading && (
-                <div className="flex justify-start">
-                  <div className="bg-gray-100 text-gray-400 text-xs px-3 py-2 rounded-xl rounded-bl-none flex items-center gap-1.5">
-                    <Loader2 size={11} className="animate-spin" /> Thinking...
+                ))}
+                {isChatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-gray-100 text-gray-400 text-xs px-3 py-2 rounded-xl rounded-bl-none flex items-center gap-1.5">
+                      <Loader2 size={11} className="animate-spin" /> Thinking…
+                    </div>
                   </div>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="px-4 py-3 border-t border-gray-100 flex gap-2">
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChat()}
-                placeholder="e.g. Add BMI row, change population to FAS, add footnote..."
-                className="flex-1 text-xs border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-              />
-              <button
-                onClick={sendChat}
-                disabled={!chatInput.trim() || isAiLoading}
-                className="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50"
-              >
-                <Send size={13} />
-              </button>
+                )}
+                {chatError && (
+                  <div className="flex items-center gap-1.5 text-xs text-red-500 px-1">
+                    <AlertCircle size={11} /> {chatError}
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="px-3 pb-3 pt-2 border-t border-gray-100 flex gap-2">
+                <input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChat()}
+                  placeholder="Ask about this shell…"
+                  disabled={isChatLoading}
+                  className="flex-1 text-xs border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-gray-50"
+                />
+                <button
+                  onClick={sendChat}
+                  disabled={!chatInput.trim() || isChatLoading}
+                  className="bg-indigo-600 text-white px-2.5 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 flex-shrink-0"
+                >
+                  <Send size={13} />
+                </button>
+              </div>
             </div>
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
-          Select a shell from the sidebar to edit.
-        </div>
+        /* No shell selected or empty state */
+        !loadingShells && shells.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3">
+            <Layers size={32} className="opacity-30" />
+            <p className="text-sm">No shells yet for this study.</p>
+            <button onClick={addShell} className="flex items-center gap-1.5 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
+              <Plus size={14} /> Create First Shell
+            </button>
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+            Select a shell from the sidebar.
+          </div>
+        )
       )}
     </div>
   );
@@ -1180,9 +1294,7 @@ const TABS = [
 
 export default function StudyPage({ studyId = "XYZ-101" }) {
   const [activeTab, setActiveTab] = useState("documents");
-  const [description, setDescription] = useState(
-    "Phase 3 clinical trial for a new hypertension medication."
-  );
+  const [description, setDescription] = useState("Phase 3 clinical trial for a new hypertension medication.");
   const [showGlobalReqPanel, setShowGlobalReqPanel] = useState(false);
   const [globalReqText, setGlobalReqText] = useState("");
 
@@ -1197,7 +1309,6 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
       {/* ── Top Nav ── */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
-          {/* Logo */}
           <div className="flex items-center gap-2 flex-shrink-0">
             <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center">
               <Layers size={16} className="text-indigo-600" />
@@ -1206,7 +1317,6 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
               <span className="text-indigo-600">TLF</span>Gen
             </span>
           </div>
-          {/* Nav */}
           <nav className="hidden md:flex items-center gap-6 text-sm text-gray-500">
             <button className="hover:text-gray-800 transition flex items-center gap-1.5">
               <Table size={14} /> Dashboard
@@ -1218,7 +1328,6 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
               <Settings size={14} /> Settings
             </button>
           </nav>
-          {/* Avatar */}
           <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
             JD
           </div>
@@ -1237,9 +1346,8 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
           <span className="text-gray-700 font-medium">Study {studyId}</span>
         </div>
 
-        {/* ── Study Header + Global Requirements Panel ── */}
+        {/* ── Study Header ── */}
         <div className="flex flex-col md:flex-row gap-6 mb-6">
-          {/* Left: Study title + description */}
           <div className="flex-1">
             <h1 className="text-3xl font-black text-gray-900 mb-2">Study {studyId}</h1>
             <textarea
@@ -1250,8 +1358,6 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
               placeholder="Study description..."
             />
           </div>
-
-          {/* Right: Global Requirements card */}
           {showGlobalReqPanel ? (
             <div className="md:w-96 bg-white rounded-xl border border-gray-200 shadow-sm p-5">
               <div className="flex items-center justify-between mb-3">
@@ -1259,10 +1365,7 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
                   <Settings size={16} className="text-indigo-500" />
                   <span className="font-semibold text-gray-800">Global Requirements</span>
                 </div>
-                <button
-                  onClick={() => setShowGlobalReqPanel(false)}
-                  className="text-sm text-gray-400 hover:text-gray-600 transition"
-                >
+                <button onClick={() => setShowGlobalReqPanel(false)} className="text-sm text-gray-400 hover:text-gray-600 transition">
                   Cancel
                 </button>
               </div>
@@ -1273,10 +1376,7 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
                 placeholder="Enter global formatting or structural requirements..."
                 className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none mb-3"
               />
-              <button
-                onClick={saveRequirements}
-                className="w-full bg-indigo-600 text-white font-medium text-sm py-2.5 rounded-lg hover:bg-indigo-700 transition"
-              >
+              <button onClick={saveRequirements} className="w-full bg-indigo-600 text-white font-medium text-sm py-2.5 rounded-lg hover:bg-indigo-700 transition">
                 Save Requirements
               </button>
             </div>
@@ -1313,7 +1413,7 @@ export default function StudyPage({ studyId = "XYZ-101" }) {
           {activeTab === "documents" && <DocumentsTab />}
           {activeTab === "tlf" && <TLFTab />}
           {activeTab === "global" && <GlobalRequirementsTab />}
-          {activeTab === "shells" && <AIShellsTab />}
+          {activeTab === "shells" && <AIShellsTab studyId={studyId} />}
         </div>
       </main>
     </div>

@@ -78,6 +78,7 @@ from schemas import (
     MessageList,
     MessageRead,
     ShellCreate,
+    ShellGenerateResponse,
     ShellList,
     ShellRead,
     ShellUpdate,
@@ -237,6 +238,242 @@ async def _parse_document_stub(doc_id: str) -> None:
             doc.status = "ready"
             doc.updated_at = datetime.utcnow()
             await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Shell generation helpers  (PRD §4.4 — swap body of _placeholder_generate_shell
+# for a real LLM call; the signature + return dict shape are stable)
+# ---------------------------------------------------------------------------
+
+def _retrieve_relevant_chunks(
+    documents: list,
+    shell_title: str,
+    shell_type: str,
+    max_chunks: int = 5,
+) -> list:
+    """
+    Keyword-based chunk retrieval stub.
+
+    Scores each stored chunk by how many title/type keywords appear in its
+    text, then returns the top-N.  Replace with pgvector / embedding search
+    in production.
+    """
+    keywords = set(shell_title.lower().split())
+    keywords.update({shell_type, "variable", "analysis", "parameter", "table"})
+    keywords = {kw for kw in keywords if len(kw) > 2}
+
+    scored: list = []
+    for doc in documents:
+        if not doc.chunks_meta:
+            continue
+        for chunk in doc.chunks_meta:
+            text = (chunk.get("text") or "").lower()
+            score = sum(1 for kw in keywords if kw in text)
+            if score > 0:
+                scored.append({**chunk, "doc_type": doc.type, "score": score})
+
+    scored.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return scored[:max_chunks]
+
+
+def _infer_rows_for_shell(title_lower: str, shell_type: str) -> list:
+    """Return standard placeholder rows for common shell categories."""
+    ai_flag = {"ai_suggested": True, "confirmed": False}
+
+    if "demographic" in title_lower or "baseline" in title_lower:
+        return [
+            {"id": "r_1", "label": "Age (years)", "indent": 0, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+            {"id": "r_2", "label": "  Mean (SD)", "indent": 1, "isHeader": False, "stat": "", "type": "numeric", **ai_flag},
+            {"id": "r_3", "label": "  Median [Min, Max]", "indent": 1, "isHeader": False, "stat": "", "type": "numeric", **ai_flag},
+            {"id": "r_4", "label": "Sex, n (%)", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_5", "label": "  Male", "indent": 1, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_6", "label": "  Female", "indent": 1, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_7", "label": "Race, n (%)", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_8", "label": "Weight (kg)", "indent": 0, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+            {"id": "r_9", "label": "BMI (kg/m²)", "indent": 0, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+        ]
+    elif "adverse" in title_lower or "safety" in title_lower or "event" in title_lower:
+        return [
+            {"id": "r_1", "label": "Any TEAE", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_2", "label": "Any Grade ≥3 TEAE", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_3", "label": "Any Serious AE (SAE)", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_4", "label": "AE Leading to Discontinuation", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_5", "label": "AE Leading to Death", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+        ]
+    elif "efficacy" in title_lower or "endpoint" in title_lower or "change" in title_lower or "primary" in title_lower:
+        return [
+            {"id": "r_1", "label": "Baseline", "indent": 0, "isHeader": True, "stat": "", "type": "header", **ai_flag},
+            {"id": "r_2", "label": "  n", "indent": 1, "isHeader": False, "stat": "n", "type": "numeric", **ai_flag},
+            {"id": "r_3", "label": "  Mean (SD)", "indent": 1, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+            {"id": "r_4", "label": "Week 12", "indent": 0, "isHeader": True, "stat": "", "type": "header", **ai_flag},
+            {"id": "r_5", "label": "  n", "indent": 1, "isHeader": False, "stat": "n", "type": "numeric", **ai_flag},
+            {"id": "r_6", "label": "  Mean (SD)", "indent": 1, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+            {"id": "r_7", "label": "Change from Baseline", "indent": 0, "isHeader": True, "stat": "", "type": "header", **ai_flag},
+            {"id": "r_8", "label": "  LS Mean (SE)", "indent": 1, "isHeader": False, "stat": "LS Mean (SE)", "type": "numeric", **ai_flag},
+            {"id": "r_9", "label": "  95% CI", "indent": 1, "isHeader": False, "stat": "95% CI", "type": "numeric", **ai_flag},
+            {"id": "r_10", "label": "  p-value", "indent": 1, "isHeader": False, "stat": "p-value", "type": "numeric", **ai_flag},
+        ]
+    elif "history" in title_lower:
+        return [
+            {"id": "r_1", "label": "Any Medical History", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_2", "label": "Cardiac disorders", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_3", "label": "Gastrointestinal disorders", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_4", "label": "Respiratory disorders", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+        ]
+    else:
+        return [
+            {"id": "r_1", "label": "Parameter 1", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+            {"id": "r_2", "label": "Parameter 2", "indent": 0, "isHeader": False, "stat": "Mean (SD)", "type": "numeric", **ai_flag},
+            {"id": "r_3", "label": "Parameter 3", "indent": 0, "isHeader": False, "stat": "n (%)", "type": "categorical", **ai_flag},
+        ]
+
+
+def _infer_footnotes_for_shell(
+    title_lower: str,
+    tlf: Optional[TLF],
+    relevant_chunks: list,
+) -> list:
+    """Generate contextual footnotes.  All AI-inferred items are prefixed with [AI]."""
+    footnotes = []
+    section_ref = getattr(tlf, "section_ref", None) if tlf else None
+    if section_ref:
+        footnotes.append(f"[AI] Source: {section_ref}.")
+
+    if "demographic" in title_lower or "baseline" in title_lower:
+        footnotes += [
+            "[AI] Abbreviations: BMI = Body Mass Index; SD = Standard Deviation.",
+            "[AI] Percentages are based on the number of subjects with non-missing data.",
+        ]
+    elif "adverse" in title_lower or "safety" in title_lower:
+        footnotes += [
+            "[AI] TEAE = Treatment-Emergent Adverse Event; AE = Adverse Event; SAE = Serious Adverse Event.",
+            "[AI] Subjects with multiple events in the same category are counted once.",
+            "[AI] MedDRA coding applied (version xx.x).",
+        ]
+    elif "efficacy" in title_lower or "endpoint" in title_lower or "change" in title_lower:
+        footnotes += [
+            "[AI] LS Mean = Least Squares Mean; SE = Standard Error; CI = Confidence Interval.",
+            "[AI] Analysis based on ANCOVA model with treatment as factor and baseline as covariate.",
+            "[AI] Missing data handled by MMRM (mixed model repeated measures).",
+        ]
+
+    return footnotes
+
+
+def _placeholder_generate_shell(
+    shell: Shell,
+    tlf: Optional[TLF],
+    relevant_chunks: list,
+    global_req,
+) -> dict:
+    """
+    Placeholder AI shell generator.  Follows PRD §4.4 priority:
+
+      1. SAP/protocol chunks contain explicit variables → source = "sap_chunks"
+      2. Shell already has user-defined rows             → source = "user_variables"
+      3. Infer standard structure from title/type        → source = "inferred"
+
+    To plug in a real LLM: keep this signature, replace the body with an
+    async or sync LLM call, and return the same dict shape.
+    """
+    title_lower = (shell.title or "").lower()
+    shell_type = shell.type or "table"
+
+    has_sap_chunks = any(c.get("doc_type") in ("sap", "protocol") for c in relevant_chunks)
+    has_user_rows = bool(shell.rows)
+
+    if has_sap_chunks:
+        source = "sap_chunks"
+    elif has_user_rows:
+        source = "user_variables"
+    else:
+        source = "inferred"
+
+    # ── Columns ──────────────────────────────────────────────────────────────
+    if global_req and getattr(global_req, "columns", None):
+        columns = []
+        for i, c in enumerate(global_req.columns):
+            if isinstance(c, dict):
+                columns.append({
+                    "id": c.get("id", f"col_{i}"),
+                    "key": c.get("key", f"col_{i}"),
+                    "label": c.get("label", f"Column {i + 1}"),
+                    "width": c.get("width", 120),
+                    "align": c.get("align", "center" if i > 0 else "left"),
+                })
+            else:
+                columns.append({
+                    "id": f"col_{i}", "key": f"col_{i}",
+                    "label": str(c), "width": 120,
+                    "align": "center" if i > 0 else "left",
+                })
+    elif shell.columns:
+        columns = shell.columns
+    else:
+        if "demographic" in title_lower or "baseline" in title_lower:
+            columns = [
+                {"id": "col_0", "key": "characteristic", "label": "Characteristic", "width": 200, "align": "left"},
+                {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
+                {"id": "col_2", "key": "treatment", "label": "Treatment (N=xx)", "width": 120, "align": "center"},
+                {"id": "col_3", "key": "total", "label": "Total (N=xx)", "width": 100, "align": "center"},
+            ]
+        elif "adverse" in title_lower or "safety" in title_lower or "event" in title_lower:
+            columns = [
+                {"id": "col_0", "key": "parameter", "label": "Parameter", "width": 220, "align": "left"},
+                {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
+                {"id": "col_2", "key": "treatment", "label": "Treatment (N=xx)", "width": 120, "align": "center"},
+            ]
+        elif "efficacy" in title_lower or "endpoint" in title_lower or "change" in title_lower or "primary" in title_lower:
+            columns = [
+                {"id": "col_0", "key": "visit", "label": "Visit / Parameter", "width": 180, "align": "left"},
+                {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
+                {"id": "col_2", "key": "treatment", "label": "Treatment (N=xx)", "width": 120, "align": "center"},
+                {"id": "col_3", "key": "diff", "label": "Difference (95% CI)", "width": 160, "align": "center"},
+            ]
+        else:
+            columns = [
+                {"id": "col_0", "key": "parameter", "label": "Parameter", "width": 200, "align": "left"},
+                {"id": "col_1", "key": "value", "label": "Value", "width": 120, "align": "center"},
+            ]
+
+    # ── Rows ─────────────────────────────────────────────────────────────────
+    if source == "user_variables":
+        rows = shell.rows  # preserve user-defined content
+    else:
+        rows = _infer_rows_for_shell(title_lower, shell_type)
+
+    # ── Footnotes ─────────────────────────────────────────────────────────────
+    footnotes = _infer_footnotes_for_shell(title_lower, tlf, relevant_chunks)
+
+    # ── Explanation ───────────────────────────────────────────────────────────
+    if source == "sap_chunks":
+        explanation = (
+            f"Shell generated using {len(relevant_chunks)} relevant chunk(s) retrieved from "
+            "parsed SAP/protocol documents. Rows and columns are derived from document content. "
+            "AI-inferred items are marked [AI] and flagged as unconfirmed — please review."
+        )
+    elif source == "user_variables":
+        explanation = (
+            "Shell enriched from your existing rows. Columns were updated based on global "
+            "requirements (if configured). Footnotes were inferred from shell context. "
+            "AI-inferred footnotes are marked [AI] — please review."
+        )
+    else:
+        explanation = (
+            f'Shell generated by inferring standard structure for a "{shell_type}" titled '
+            f'"{shell.title}". No SAP chunks or user-defined rows were available, so rows, '
+            "columns, and footnotes follow standard clinical trial table conventions. "
+            "All items are marked [AI] and unconfirmed — please review carefully."
+        )
+
+    return {
+        "columns": columns,
+        "rows": rows,
+        "footnotes": footnotes,
+        "source": source,
+        "explanation": explanation,
+        "chunks_used": [c.get("chunk_id", "") for c in relevant_chunks],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +1072,130 @@ async def get_shell(
     db: AsyncSession = Depends(get_db),
 ):
     return await _get_shell(study_id, shell_id, db)
+
+
+@app.post(
+    "/studies/{study_id}/shells/{shell_id}/generate",
+    response_model=ShellGenerateResponse,
+    tags=["Shells"],
+    summary="AI-generate content for a shell (PRD §4.4)",
+)
+async def generate_shell(
+    study_id: str,
+    shell_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    POST /studies/{study_id}/shells/{shell_id}/generate
+
+    Runs the placeholder AI generation pipeline for a single shell.
+
+    Priority (PRD §4.4):
+      1. Parsed SAP/protocol chunks explicitly reference variables → source="sap_chunks"
+      2. Shell already has user-defined rows                       → source="user_variables"
+      3. Infer standard structure from title / type / context      → source="inferred"
+
+    Persists generated columns, rows, footnotes, and ai_generation_log back
+    to the Shell record.  Creates an audit Action and a Message for the
+    generation event.
+
+    To integrate a real LLM: replace the body of _placeholder_generate_shell
+    with your LLM call — the signature and return dict shape are stable.
+    """
+    await _get_study(study_id, db)
+    shell = await _get_shell(study_id, shell_id, db)
+    tlf = await db.get(TLF, shell.tlf_id)
+
+    # Load all ready documents for this study
+    docs_result = await db.execute(
+        select(Document).where(
+            Document.study_id == study_id,
+            Document.status == "ready",
+        )
+    )
+    documents = list(docs_result.scalars().all())
+
+    # Find a matching GlobalRequirement by section keyword heuristic
+    global_req = None
+    gr_result = await db.execute(
+        select(GlobalRequirement).where(GlobalRequirement.study_id == study_id)
+    )
+    title_lower = (shell.title or "").lower()
+    for req in gr_result.scalars().all():
+        section = (req.section_type or "").lower()
+        if section in title_lower or (tlf and section in (tlf.section_ref or "").lower()):
+            global_req = req
+            break
+
+    # Retrieve relevant document chunks (keyword-based stub)
+    relevant_chunks = _retrieve_relevant_chunks(
+        documents, shell.title or "", shell.type or "table"
+    )
+
+    # Run placeholder generation
+    result = _placeholder_generate_shell(shell, tlf, relevant_chunks, global_req)
+
+    # Persist generated output back to the Shell
+    before_state = {
+        "columns": shell.columns,
+        "rows": shell.rows,
+        "footnotes": shell.footnotes,
+    }
+    shell.columns = result["columns"]
+    shell.rows = result["rows"]
+    shell.footnotes = result["footnotes"]
+    shell.ai_generation_log = {
+        "source": result["source"],
+        "explanation": result["explanation"],
+        "chunks_used": result["chunks_used"],
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+    shell.updated_at = datetime.utcnow()
+
+    # Audit action
+    await _log_action(
+        db,
+        study_id=study_id,
+        action_type="ai_suggestion",
+        tlf_id=shell.tlf_id,
+        shell_id=shell_id,
+        target="shell",
+        before=before_state,
+        after={
+            "columns": result["columns"],
+            "rows": result["rows"],
+            "footnotes": result["footnotes"],
+            "source": result["source"],
+        },
+        actor="ai",
+    )
+
+    # Chat message summarising the generation event
+    gen_msg = Message(
+        id=str(uuid.uuid4()),
+        study_id=study_id,
+        tlf_id=shell.tlf_id,
+        shell_id=shell_id,
+        role="ai",
+        text=result["explanation"],
+        timestamp=datetime.utcnow(),
+        extra_metadata={
+            "event": "shell_generated",
+            "source": result["source"],
+            "chunks_used": result["chunks_used"],
+        },
+    )
+    db.add(gen_msg)
+
+    await db.flush()
+    await db.refresh(shell)
+
+    return ShellGenerateResponse(
+        shell=ShellRead.model_validate(shell),
+        explanation=result["explanation"],
+        source=result["source"],
+        chunks_used=result["chunks_used"],
+    )
 
 
 @app.put(

@@ -621,6 +621,10 @@ function AIShellsTab({ studyId }) {
   // save-state: "idle" | "saving" | "saved" | "error"
   const [saveState, setSaveState] = useState("idle");
 
+  // generation state
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState(null);
+
   // per-shell chat history: { [shellId]: [{role, text}] }
   const [chatByShellId, setChatByShellId] = useState({});
   const [chatInput, setChatInput] = useState("");
@@ -838,6 +842,52 @@ function AIShellsTab({ studyId }) {
     handleAiAction("generic", chatInput);
   };
 
+  // ── Generate Shell via backend ──
+  const handleGenerateShell = useCallback(async () => {
+    if (!activeShell || isGenerating) return;
+    setIsGenerating(true);
+    setGenerateError(null);
+
+    try {
+      const r = await fetch(
+        `${API_BASE}/studies/${studyId}/shells/${activeShell.id}/generate`,
+        { method: "POST" }
+      );
+      if (!r.ok) throw new Error(`Generation failed (${r.status})`);
+      const data = await r.json();
+
+      // Update the shell in local state with generated content
+      setShells((prev) =>
+        prev.map((s) => (s.id === activeShell.id ? { ...s, ...data.shell } : s))
+      );
+
+      // Surface the explanation in the AI chat panel
+      const sourceLabel =
+        data.source === "sap_chunks"
+          ? "SAP/protocol document chunks"
+          : data.source === "user_variables"
+          ? "existing user-defined rows"
+          : "inferred standard structure";
+      const chunkNote =
+        data.chunks_used && data.chunks_used.length > 0
+          ? ` Used ${data.chunks_used.length} document chunk(s).`
+          : " No document chunks were available.";
+      const aiMsg = {
+        role: "assistant",
+        text: `Shell generated (source: ${sourceLabel}).${chunkNote}\n\n${data.explanation}`,
+      };
+      setChatByShellId((prev) => ({
+        ...prev,
+        [selectedId]: [...(prev[selectedId] || [chatMessages[0]]), aiMsg],
+      }));
+    } catch (err) {
+      setGenerateError(err.message || "Generation failed");
+      setTimeout(() => setGenerateError(null), 5000);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [activeShell, isGenerating, studyId, selectedId, chatMessages]);
+
   // ── Export JSON ──
   const exportMock = () => {
     const json = JSON.stringify(shells, null, 2);
@@ -963,6 +1013,24 @@ function AIShellsTab({ studyId }) {
                 placeholder="Shell title"
               />
               <SaveBadge />
+              {generateError && (
+                <span className="flex items-center gap-1 text-xs text-red-500 font-medium">
+                  <AlertCircle size={11} /> {generateError}
+                </span>
+              )}
+              <button
+                onClick={handleGenerateShell}
+                disabled={isGenerating}
+                title="AI-generate rows, columns, and footnotes for this shell"
+                className="flex items-center gap-1.5 bg-indigo-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition disabled:opacity-60"
+              >
+                {isGenerating ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <Sparkles size={12} />
+                )}
+                {isGenerating ? "Generating…" : "Generate Shell"}
+              </button>
               <button
                 onClick={() => updateActiveShell({ status: "approved" })}
                 className="flex items-center gap-1.5 bg-green-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-green-700 transition"

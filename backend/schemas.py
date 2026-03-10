@@ -276,6 +276,14 @@ class ShellList(BaseModel):
     total: int
 
 
+class ShellGenerateResponse(BaseModel):
+    """Returned by POST /studies/{id}/shells/{shell_id}/generate."""
+    shell: ShellRead
+    explanation: str
+    source: str  # "sap_chunks" | "user_variables" | "inferred"
+    chunks_used: List[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Global Requirements
 # ---------------------------------------------------------------------------

@@ -228,7 +228,7 @@ class TLFList(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ShellCreate(BaseModel):
-    tlf_id: str
+    tlf_id: Optional[str] = Field(None, description="Optional TLF entry this shell belongs to")
     type: TLFType = TLFType.table
     title: str
     subtitle: Optional[str] = None
@@ -241,7 +241,7 @@ class ShellCreate(BaseModel):
 class ShellRead(BaseModel):
     id: str
     study_id: str
-    tlf_id: str
+    tlf_id: Optional[str] = None
     type: TLFType
     title: str
     subtitle: Optional[str] = None

@@ -789,7 +789,8 @@ async def create_shell(
     Biostat Expert → Builder → Reviewer AI loop (PRD §4.4).
     """
     await _get_study(study_id, db)
-    await _get_tlf(study_id, body.tlf_id, db)
+    if body.tlf_id:
+        await _get_tlf(study_id, body.tlf_id, db)
 
     shell = Shell(
         id=str(uuid.uuid4()),

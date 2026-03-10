@@ -163,7 +163,7 @@ class Shell(Base):
 
     id = Column(String, primary_key=True, default=_uuid)
     study_id = Column(String, ForeignKey("studies.id", ondelete="CASCADE"), nullable=False, index=True)
-    tlf_id = Column(String, ForeignKey("tlfs.id", ondelete="CASCADE"), nullable=False, index=True)
+    tlf_id = Column(String, ForeignKey("tlfs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     type = Column(
         Enum("table", "listing", "figure", name="shell_type"),

@@ -87,6 +87,14 @@ class ActionType(str, Enum):
     ai_suggestion = "ai_suggestion"
     ai_variable_flagged = "ai_variable_flagged"
     ai_reviewer_correction = "ai_reviewer_correction"
+    # Study-level lifecycle events (audit trail milestone)
+    shell_created = "shell_created"
+    tlf_list_saved = "tlf_list_saved"
+    tlf_list_extracted = "tlf_list_extracted"
+    tlf_list_approved = "tlf_list_approved"
+    global_reqs_saved = "global_reqs_saved"
+    document_uploaded = "document_uploaded"
+    chat_sent = "chat_sent"
 
 
 # ---------------------------------------------------------------------------
@@ -389,4 +397,32 @@ class ActionRead(BaseModel):
 
 class ActionList(BaseModel):
     actions: List[ActionRead]
+    total: int
+
+
+# ---------------------------------------------------------------------------
+# Audit Events  (enriched view of Actions for the UI history panel)
+# ---------------------------------------------------------------------------
+
+class AuditEventRead(BaseModel):
+    """
+    Enriched audit event for the UI.  All fields are computed from Action rows
+    at response time — no extra DB columns required for display metadata.
+    """
+    id: str
+    study_id: str
+    shell_id: Optional[str] = None
+    tlf_id: Optional[str] = None
+    entity_type: str        # "study" | "tlf_list" | "global_requirements" | "shell" | "chat" | "document"
+    entity_id: Optional[str] = None
+    action: str             # raw action type string
+    summary: str            # human-readable one-liner
+    details: Optional[Dict[str, Any]] = None
+    actor: str
+    source: str             # "user" | "ai" | "backend"
+    created_at: datetime
+
+
+class AuditEventList(BaseModel):
+    events: List[AuditEventRead]
     total: int

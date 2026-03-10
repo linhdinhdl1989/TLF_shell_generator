@@ -33,6 +33,26 @@ import {
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 
+// ─── Download helper ──────────────────────────────────────────────────────────
+
+async function downloadFile(url, fallbackFilename) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Export failed (HTTP ${r.status})`);
+  const blob = await r.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  // Try to extract filename from Content-Disposition header
+  const cd = r.headers.get("Content-Disposition") || "";
+  const match = cd.match(/filename="?([^";\n]+)"?/i);
+  const filename = (match && match[1]) ? match[1] : fallbackFilename;
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+
 // ─── Mock Data (Tabs 1-3) ─────────────────────────────────────────────────────
 
 const INITIAL_DOCS = [
@@ -404,6 +424,8 @@ function TLFTab({ studyId }) {
   const [isExtracting, setIsExtracting] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [actionError, setActionError] = useState(null);
+  const [isExportingCsv, setIsExportingCsv] = useState(false);
+  const [exportError, setExportError] = useState(null);
 
   // Chat state
   const [chatInput, setChatInput] = useState("");
@@ -556,6 +578,24 @@ function TLFTab({ studyId }) {
     }
   };
 
+  // ── Export TLF list as CSV ─────────────────────────────────────────────────
+
+  const exportTlfCsv = async () => {
+    if (!studyId) return;
+    setIsExportingCsv(true);
+    setExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${studyId}/export/tlf-list.csv`,
+        `study_tlf_list.csv`
+      );
+    } catch (err) {
+      setExportError(err.message || "Export failed");
+    } finally {
+      setIsExportingCsv(false);
+    }
+  };
+
   // ── Chat ───────────────────────────────────────────────────────────────────
 
   const sendChat = async () => {
@@ -634,6 +674,15 @@ function TLFTab({ studyId }) {
           <Plus size={14} /> Add Row
         </button>
         <button
+          onClick={exportTlfCsv}
+          disabled={busy || isExportingCsv || tlfs.length === 0}
+          title="Download TLF List (CSV)"
+          className="flex items-center gap-2 border border-gray-300 text-sm font-medium px-4 py-2 rounded-lg hover:bg-gray-50 transition disabled:opacity-60"
+        >
+          {isExportingCsv ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          Download TLF List (CSV)
+        </button>
+        <button
           onClick={approveAll}
           disabled={busy || tlfs.length === 0}
           className="flex items-center gap-2 bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-green-700 transition disabled:opacity-60 ml-auto"
@@ -641,6 +690,13 @@ function TLFTab({ studyId }) {
           {isApproving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
           Approve List
         </button>
+
+        {/* Export error */}
+        {exportError && (
+          <span className="text-xs text-red-500 flex items-center gap-1">
+            <AlertCircle size={11} /> {exportError}
+          </span>
+        )}
 
         {/* Save state indicator */}
         {saveState === "saving" && (
@@ -1339,6 +1395,11 @@ function AIShellsTab({ studyId, studyName }) {
   // ── Preview / edit mode toggle (default: preview) ──
   const [previewMode, setPreviewMode] = useState(true);
 
+  // ── Export state ──
+  const [exportingShellsJson, setExportingShellsJson] = useState(false);
+  const [exportingShellDocx, setExportingShellDocx] = useState(false);
+  const [exportError, setExportError] = useState(null);
+
   // ── Shell audit history ──
   const [showShellHistory, setShowShellHistory] = useState(false);
   const [shellAuditEvents, setShellAuditEvents] = useState([]);
@@ -1642,16 +1703,38 @@ function AIShellsTab({ studyId, studyName }) {
     handleAiAction("generic", chatInput);
   };
 
-  // ── Export JSON ──
-  const exportMock = () => {
-    const json = JSON.stringify(shells, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `shells_study_${studyName || studyId}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // ── Export: all shells as JSON (backend) ──
+  const exportShellsJson = async () => {
+    if (!studyId) return;
+    setExportingShellsJson(true);
+    setExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${studyId}/export/shells.json`,
+        `study_shells.json`
+      );
+    } catch (err) {
+      setExportError(err.message || "Export failed");
+    } finally {
+      setExportingShellsJson(false);
+    }
+  };
+
+  // ── Export: current shell as Word docx (backend) ──
+  const exportCurrentShellDocx = async () => {
+    if (!studyId || !selectedId) return;
+    setExportingShellDocx(true);
+    setExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${studyId}/export/shells/${selectedId}.docx`,
+        `shell_export.docx`
+      );
+    } catch (err) {
+      setExportError(err.message || "Export failed");
+    } finally {
+      setExportingShellDocx(false);
+    }
   };
 
   // ── Save-state badge ──
@@ -1696,12 +1779,12 @@ function AIShellsTab({ studyId, studyName }) {
           <span className="font-semibold text-gray-700 text-sm">Shells{shells.length > 0 ? ` (${shells.length})` : ""}</span>
           <div className="flex gap-1">
             <button
-              onClick={exportMock}
-              title="Export shells as JSON"
-              disabled={shells.length === 0}
+              onClick={exportShellsJson}
+              title="Download All Shells (JSON)"
+              disabled={shells.length === 0 || exportingShellsJson}
               className="p-1.5 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 disabled:opacity-40 transition"
             >
-              <Download size={14} />
+              {exportingShellsJson ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
             </button>
             <button
               onClick={addShell}
@@ -1790,6 +1873,20 @@ function AIShellsTab({ studyId, studyName }) {
                   <Table size={11} /> Edit
                 </button>
               </div>
+              <button
+                onClick={exportCurrentShellDocx}
+                disabled={exportingShellDocx}
+                title="Export Current Shell as Word (.docx)"
+                className="flex items-center gap-1.5 border border-gray-300 text-gray-600 text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-gray-50 transition disabled:opacity-60"
+              >
+                {exportingShellDocx ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                Export DOCX
+              </button>
+              {exportError && (
+                <span className="text-xs text-red-500 flex items-center gap-1">
+                  <AlertCircle size={11} /> {exportError}
+                </span>
+              )}
               <button
                 onClick={() => updateActiveShell({ status: "approved" })}
                 className="flex items-center gap-1.5 bg-green-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-green-700 transition"
@@ -2217,6 +2314,12 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
   const [studyAuditLoading, setStudyAuditLoading] = useState(false);
   const [studyAuditError, setStudyAuditError] = useState(null);
 
+  // ── Study-level export state ──
+  const [exportingStudyJson, setExportingStudyJson] = useState(false);
+  const [exportingStudyZip, setExportingStudyZip] = useState(false);
+  const [exportingAuditCsv, setExportingAuditCsv] = useState(false);
+  const [studyExportError, setStudyExportError] = useState(null);
+
   useEffect(() => {
     const name = studyName || studyId;
     const bootstrap = async () => {
@@ -2279,6 +2382,56 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
     console.log("Study requirements saved:", { studyId, description, globalReqText });
     setShowGlobalReqPanel(false);
     alert("Requirements saved (see console).");
+  };
+
+  // ── Study export handlers ──
+
+  const exportStudyJson = async () => {
+    if (!backendStudyId) return;
+    setExportingStudyJson(true);
+    setStudyExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${backendStudyId}/export/json`,
+        `study_export.json`
+      );
+    } catch (err) {
+      setStudyExportError(err.message || "Export failed");
+    } finally {
+      setExportingStudyJson(false);
+    }
+  };
+
+  const exportStudyZip = async () => {
+    if (!backendStudyId) return;
+    setExportingStudyZip(true);
+    setStudyExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${backendStudyId}/export/package.zip`,
+        `study_package.zip`
+      );
+    } catch (err) {
+      setStudyExportError(err.message || "Export failed");
+    } finally {
+      setExportingStudyZip(false);
+    }
+  };
+
+  const exportAuditCsv = async () => {
+    if (!backendStudyId) return;
+    setExportingAuditCsv(true);
+    setStudyExportError(null);
+    try {
+      await downloadFile(
+        `${API_BASE}/studies/${backendStudyId}/export/audit.csv`,
+        `study_audit.csv`
+      );
+    } catch (err) {
+      setStudyExportError(err.message || "Export failed");
+    } finally {
+      setExportingAuditCsv(false);
+    }
   };
 
   return (
@@ -2366,21 +2519,46 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
                 <Settings size={14} /> Save Requirements
               </button>
               {!studyBootstrapping && (
-                <button
-                  onClick={() => {
-                    const next = !showStudyAudit;
-                    setShowStudyAudit(next);
-                    if (next && backendStudyId) fetchStudyAuditEvents(backendStudyId);
-                  }}
-                  className={`flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-lg transition shadow-sm border ${
-                    showStudyAudit
-                      ? "bg-indigo-50 text-indigo-700 border-indigo-200"
-                      : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-                  }`}
-                  title="View audit trail"
-                >
-                  <History size={14} /> Audit Trail
-                </button>
+                <>
+                  <button
+                    onClick={() => {
+                      const next = !showStudyAudit;
+                      setShowStudyAudit(next);
+                      if (next && backendStudyId) fetchStudyAuditEvents(backendStudyId);
+                    }}
+                    className={`flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-lg transition shadow-sm border ${
+                      showStudyAudit
+                        ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                        : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                    }`}
+                    title="View audit trail"
+                  >
+                    <History size={14} /> Audit Trail
+                  </button>
+                  <button
+                    onClick={exportStudyJson}
+                    disabled={exportingStudyJson || !backendStudyId}
+                    className="flex items-center gap-2 bg-white text-gray-600 text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-gray-50 transition shadow-sm border border-gray-200 disabled:opacity-60"
+                    title="Export Study Data (JSON)"
+                  >
+                    {exportingStudyJson ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                    Export Study Data (JSON)
+                  </button>
+                  <button
+                    onClick={exportStudyZip}
+                    disabled={exportingStudyZip || !backendStudyId}
+                    className="flex items-center gap-2 bg-white text-gray-600 text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-gray-50 transition shadow-sm border border-gray-200 disabled:opacity-60"
+                    title="Export Complete Study Package (ZIP)"
+                  >
+                    {exportingStudyZip ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                    Export Package (ZIP)
+                  </button>
+                  {studyExportError && (
+                    <span className="text-xs text-red-500 flex items-center gap-1">
+                      <AlertCircle size={11} /> {studyExportError}
+                    </span>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -2451,6 +2629,15 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={exportAuditCsv}
+                  disabled={exportingAuditCsv || !backendStudyId}
+                  className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 px-2 py-1 rounded hover:bg-indigo-50 transition disabled:opacity-60"
+                  title="Export Audit Trail (CSV)"
+                >
+                  {exportingAuditCsv ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                  Export CSV
+                </button>
                 <button
                   onClick={() => fetchStudyAuditEvents(backendStudyId)}
                   className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-1 px-2 py-1 rounded hover:bg-indigo-50 transition"

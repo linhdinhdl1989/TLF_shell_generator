@@ -17,7 +17,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +180,10 @@ class DocumentList(BaseModel):
 class TLFCreate(BaseModel):
     number: str = Field(..., description="TLF number, e.g. '14.1.1'")
     title: str
+    subtitle: Optional[str] = Field(None, description="e.g. 'By Treatment Group'")
+    analysis_set: Optional[str] = Field(None, description="e.g. 'Safety Population'")
+    composed_title: Optional[str] = Field(None, description="Full display title assembled from components")
+    section: Optional[str] = Field(None, description="Section category: demographics|safety|efficacy|other")
     type: TLFType = TLFType.table
     section_ref: Optional[str] = Field(None, description="SAP section reference, e.g. 'SAP 12.1'")
     status: TLFStatus = TLFStatus.proposed
@@ -191,6 +195,10 @@ class TLFRead(BaseModel):
     study_id: str
     number: str
     title: str
+    subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    composed_title: Optional[str] = None
+    section: Optional[str] = None
     type: TLFType
     section_ref: Optional[str] = None
     status: TLFStatus
@@ -204,6 +212,10 @@ class TLFRead(BaseModel):
 class TLFUpdate(BaseModel):
     number: Optional[str] = None
     title: Optional[str] = None
+    subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    composed_title: Optional[str] = None
+    section: Optional[str] = None
     type: Optional[TLFType] = None
     section_ref: Optional[str] = None
     status: Optional[TLFStatus] = None
@@ -232,7 +244,11 @@ class ShellCreate(BaseModel):
     type: TLFType = TLFType.table
     title: str
     subtitle: Optional[str] = None
-    population: Optional[str] = Field(None, description="e.g. 'Full Analysis Set'")
+    analysis_set: Optional[str] = Field(None, description="e.g. 'Safety Population'")
+    composed_title: Optional[str] = None
+    population: Optional[str] = Field(None, description="Display alias for analysis_set")
+    tlf_number: Optional[str] = None
+    tlf_section: Optional[str] = None
     columns: List[Dict[str, Any]] = Field(default_factory=list)
     rows: List[Dict[str, Any]] = Field(default_factory=list)
     footnotes: List[str] = Field(default_factory=list)
@@ -243,17 +259,31 @@ class ShellRead(BaseModel):
     study_id: str
     tlf_id: str
     type: TLFType
+    tlf_number: Optional[str] = None
+    tlf_section: Optional[str] = None
     title: str
     subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    composed_title: Optional[str] = None
     population: Optional[str] = None
     columns: List[Dict[str, Any]]
     rows: List[Dict[str, Any]]
     footnotes: List[str]
     status: ShellStatus
+    warnings: List[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def inject_warnings(self) -> "ShellRead":
+        """Inject runtime warnings for missing normalized metadata."""
+        warns = []
+        if not self.analysis_set:
+            warns.append("Analysis set missing from approved TLF metadata")
+        self.warnings = warns
+        return self
 
 
 class ShellUpdate(BaseModel):
@@ -264,6 +294,8 @@ class ShellUpdate(BaseModel):
     type: Optional[TLFType] = None
     title: Optional[str] = None
     subtitle: Optional[str] = None
+    analysis_set: Optional[str] = None
+    composed_title: Optional[str] = None
     population: Optional[str] = None
     columns: Optional[List[Dict[str, Any]]] = None
     rows: Optional[List[Dict[str, Any]]] = None
@@ -282,6 +314,16 @@ class ShellGenerateResponse(BaseModel):
     explanation: str
     source: str  # "sap_chunks" | "user_variables" | "inferred"
     chunks_used: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ShellBatchGenerateResponse(BaseModel):
+    """Returned by POST /studies/{id}/shells/generate-from-tlfs."""
+    generated: List[ShellRead] = Field(default_factory=list)
+    skipped: List[str] = Field(default_factory=list, description="TLF IDs skipped (unapproved)")
+    warnings: List[str] = Field(default_factory=list)
+    total_generated: int = 0
+    total_skipped: int = 0
 
 
 # ---------------------------------------------------------------------------

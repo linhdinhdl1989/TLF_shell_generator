@@ -77,6 +77,7 @@ from schemas import (
     GlobalRequirementUpdate,
     MessageList,
     MessageRead,
+    ShellBatchGenerateResponse,
     ShellCreate,
     ShellGenerateResponse,
     ShellList,
@@ -371,13 +372,23 @@ def _placeholder_generate_shell(
 
       1. SAP/protocol chunks contain explicit variables → source = "sap_chunks"
       2. Shell already has user-defined rows             → source = "user_variables"
-      3. Infer standard structure from title/type        → source = "inferred"
+      3. Infer standard structure from approved TLF metadata → source = "inferred"
 
-    To plug in a real LLM: keep this signature, replace the body with an
-    async or sync LLM call, and return the same dict shape.
+    Uses approved TLF normalized fields (title, subtitle, analysis_set, section)
+    as the canonical metadata anchor.  Retrieval results enrich content.
+
+    To plug in a real LLM: keep this signature, replace the body with your
+    LLM call, return the same dict shape.
     """
+    # Prefer structured section info over title-parsing
+    section_key = (getattr(shell, "tlf_section", None) or shell.title or "").lower()
     title_lower = (shell.title or "").lower()
+    subtitle_lower = (getattr(shell, "subtitle", None) or "").lower()
+    analysis_set = getattr(shell, "analysis_set", None) or shell.population or ""
     shell_type = shell.type or "table"
+
+    # Combined semantic string for row/column inference
+    context_lower = " ".join([section_key, title_lower, subtitle_lower]).lower()
 
     has_sap_chunks = any(c.get("doc_type") in ("sap", "protocol") for c in relevant_chunks)
     has_user_rows = bool(shell.rows)
@@ -389,7 +400,7 @@ def _placeholder_generate_shell(
     else:
         source = "inferred"
 
-    # ── Columns ──────────────────────────────────────────────────────────────
+    # ── Columns — derived from global_req, then shell.columns, then context ──
     if global_req and getattr(global_req, "columns", None):
         columns = []
         for i, c in enumerate(global_req.columns):
@@ -410,20 +421,20 @@ def _placeholder_generate_shell(
     elif shell.columns:
         columns = shell.columns
     else:
-        if "demographic" in title_lower or "baseline" in title_lower:
+        if any(k in context_lower for k in ("demographic", "baseline", "disposition")):
             columns = [
                 {"id": "col_0", "key": "characteristic", "label": "Characteristic", "width": 200, "align": "left"},
                 {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
                 {"id": "col_2", "key": "treatment", "label": "Treatment (N=xx)", "width": 120, "align": "center"},
                 {"id": "col_3", "key": "total", "label": "Total (N=xx)", "width": 100, "align": "center"},
             ]
-        elif "adverse" in title_lower or "safety" in title_lower or "event" in title_lower:
+        elif any(k in context_lower for k in ("adverse", "safety", "event", "ae", "teae")):
             columns = [
                 {"id": "col_0", "key": "parameter", "label": "Parameter", "width": 220, "align": "left"},
                 {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
                 {"id": "col_2", "key": "treatment", "label": "Treatment (N=xx)", "width": 120, "align": "center"},
             ]
-        elif "efficacy" in title_lower or "endpoint" in title_lower or "change" in title_lower or "primary" in title_lower:
+        elif any(k in context_lower for k in ("efficacy", "endpoint", "change", "primary", "secondary")):
             columns = [
                 {"id": "col_0", "key": "visit", "label": "Visit / Parameter", "width": 180, "align": "left"},
                 {"id": "col_1", "key": "placebo", "label": "Placebo (N=xx)", "width": 120, "align": "center"},
@@ -436,34 +447,43 @@ def _placeholder_generate_shell(
                 {"id": "col_1", "key": "value", "label": "Value", "width": 120, "align": "center"},
             ]
 
-    # ── Rows ─────────────────────────────────────────────────────────────────
+    # ── Rows — use context_lower (includes section key) for better inference ─
     if source == "user_variables":
         rows = shell.rows  # preserve user-defined content
     else:
-        rows = _infer_rows_for_shell(title_lower, shell_type)
+        rows = _infer_rows_for_shell(context_lower, shell_type)
 
     # ── Footnotes ─────────────────────────────────────────────────────────────
-    footnotes = _infer_footnotes_for_shell(title_lower, tlf, relevant_chunks)
+    footnotes = _infer_footnotes_for_shell(context_lower, tlf, relevant_chunks)
 
-    # ── Explanation ───────────────────────────────────────────────────────────
+    # ── Explanation — surface normalized metadata provenance ──────────────────
+    tlf_ref = f"TLF {shell.tlf_number}: " if getattr(shell, "tlf_number", None) else ""
+    analysis_str = f" ({analysis_set})" if analysis_set else " (analysis set not specified)"
+    subtitle_str = f", subtitle: \"{shell.subtitle}\"" if getattr(shell, "subtitle", None) else ""
+
     if source == "sap_chunks":
         explanation = (
-            f"Shell generated using {len(relevant_chunks)} relevant chunk(s) retrieved from "
-            "parsed SAP/protocol documents. Rows and columns are derived from document content. "
-            "AI-inferred items are marked [AI] and flagged as unconfirmed — please review."
+            f"{tlf_ref}Shell generated using {len(relevant_chunks)} relevant chunk(s) from "
+            f"parsed SAP/protocol documents{analysis_str}. "
+            f"Title: \"{shell.title}\"{subtitle_str}. "
+            "Rows and columns derived from document content. "
+            "AI-inferred items marked [AI] and flagged as unconfirmed — please review."
         )
     elif source == "user_variables":
         explanation = (
-            "Shell enriched from your existing rows. Columns were updated based on global "
-            "requirements (if configured). Footnotes were inferred from shell context. "
-            "AI-inferred footnotes are marked [AI] — please review."
+            f"{tlf_ref}Shell enriched from existing user-defined rows{analysis_str}. "
+            f"Title: \"{shell.title}\"{subtitle_str}. "
+            "Columns updated from global requirements (if configured). "
+            "Footnotes inferred from shell context. "
+            "AI-inferred footnotes marked [AI] — please review."
         )
     else:
         explanation = (
-            f'Shell generated by inferring standard structure for a "{shell_type}" titled '
-            f'"{shell.title}". No SAP chunks or user-defined rows were available, so rows, '
-            "columns, and footnotes follow standard clinical trial table conventions. "
-            "All items are marked [AI] and unconfirmed — please review carefully."
+            f"{tlf_ref}Shell generated by inferring standard structure for a \"{shell_type}\"{analysis_str}. "
+            f"Title: \"{shell.title}\"{subtitle_str}. "
+            "No SAP chunks or user-defined rows were available; rows, columns, and footnotes "
+            "follow standard clinical trial conventions. "
+            "All items marked [AI] and unconfirmed — please review carefully."
         )
 
     return {
@@ -729,11 +749,13 @@ async def add_tlf(
     db: AsyncSession = Depends(get_db),
 ):
     await _get_study(study_id, db)
-    tlf = TLF(
-        id=str(uuid.uuid4()),
-        study_id=study_id,
-        **body.model_dump(),
-    )
+    data = body.model_dump()
+    # Auto-compute composed_title if not supplied
+    if not data.get("composed_title"):
+        data["composed_title"] = _compose_title(
+            data.get("title", ""), data.get("subtitle"), data.get("analysis_set")
+        )
+    tlf = TLF(id=str(uuid.uuid4()), study_id=study_id, **data)
     db.add(tlf)
     await _log_action(
         db,
@@ -783,7 +805,12 @@ async def bulk_replace_tlf_list(
 
     new_tlfs: List[TLF] = []
     for item in body.tlfs:
-        tlf = TLF(id=str(uuid.uuid4()), study_id=study_id, **item.model_dump())
+        data = item.model_dump()
+        if not data.get("composed_title"):
+            data["composed_title"] = _compose_title(
+                data.get("title", ""), data.get("subtitle"), data.get("analysis_set")
+            )
+        tlf = TLF(id=str(uuid.uuid4()), study_id=study_id, **data)
         db.add(tlf)
         new_tlfs.append(tlf)
 
@@ -821,12 +848,17 @@ async def update_tlf(
 
     before = {"number": tlf.number, "title": tlf.title, "status": tlf.status}
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    for field, value in updates.items():
         if hasattr(tlf, field) and value is not None:
             if hasattr(value, "value"):
                 setattr(tlf, field, value.value)
             else:
                 setattr(tlf, field, value)
+
+    # Recompute composed_title if any title component changed and not explicitly set
+    if any(f in updates for f in ("title", "subtitle", "analysis_set")) and "composed_title" not in updates:
+        tlf.composed_title = _compose_title(tlf.title, tlf.subtitle, tlf.analysis_set)
 
     tlf.updated_at = datetime.utcnow()
     after = {"number": tlf.number, "title": tlf.title, "status": tlf.status}
@@ -1007,6 +1039,50 @@ async def list_shells(
     return ShellList(shells=list(rows), total=len(rows))
 
 
+def _compose_title(title: str, subtitle: Optional[str], analysis_set: Optional[str]) -> str:
+    """Build a full composed title from structured parts."""
+    parts = [title.strip()]
+    if subtitle and subtitle.strip():
+        parts.append(subtitle.strip())
+    result = ". ".join(parts)
+    if analysis_set and analysis_set.strip():
+        result = f"{result} ({analysis_set.strip()})"
+    return result
+
+
+def _shell_from_tlf(study_id: str, tlf: TLF) -> Shell:
+    """
+    Create a Shell ORM instance pre-populated with normalized metadata from
+    an approved TLF item.  Columns/rows/footnotes start empty — call
+    generate_shell to populate them.
+    """
+    composed = tlf.composed_title or _compose_title(
+        tlf.title, tlf.subtitle, tlf.analysis_set
+    )
+    return Shell(
+        id=str(uuid.uuid4()),
+        study_id=study_id,
+        tlf_id=tlf.id,
+        type=tlf.type,
+        tlf_number=tlf.number,
+        tlf_section=tlf.section,
+        title=tlf.title,
+        subtitle=tlf.subtitle,
+        analysis_set=tlf.analysis_set,
+        composed_title=composed,
+        population=tlf.analysis_set,   # keep legacy field in sync
+        columns=[],
+        rows=[],
+        footnotes=[],
+        status="draft",
+        ai_generation_log={
+            "note": "Initialized from approved TLF item",
+            "tlf_id": tlf.id,
+            "tlf_number": tlf.number,
+        },
+    )
+
+
 @app.post(
     "/studies/{study_id}/shells",
     response_model=ShellRead,
@@ -1022,25 +1098,42 @@ async def create_shell(
     """
     POST /studies/{study_id}/shells
 
-    Creates a new shell record.  In production this would trigger the
-    Biostat Expert → Builder → Reviewer AI loop (PRD §4.4).
+    Creates a new shell record using normalized metadata from the linked TLF
+    item.  If the TLF is approved its normalized fields (subtitle,
+    analysis_set, composed_title) are copied into the shell automatically.
+    If caller supplies these fields explicitly they take precedence.
     """
     await _get_study(study_id, db)
-    await _get_tlf(study_id, body.tlf_id, db)
+    tlf = await _get_tlf(study_id, body.tlf_id, db)
+
+    # Derive composed_title if not explicitly provided
+    title = body.title or tlf.title
+    subtitle = body.subtitle if body.subtitle is not None else tlf.subtitle
+    analysis_set = body.analysis_set if body.analysis_set is not None else tlf.analysis_set
+    composed = body.composed_title or _compose_title(title, subtitle, analysis_set)
 
     shell = Shell(
         id=str(uuid.uuid4()),
         study_id=study_id,
         tlf_id=body.tlf_id,
         type=body.type.value,
-        title=body.title,
-        subtitle=body.subtitle,
-        population=body.population,
+        tlf_number=body.tlf_number or tlf.number,
+        tlf_section=body.tlf_section or tlf.section,
+        title=title,
+        subtitle=subtitle,
+        analysis_set=analysis_set,
+        composed_title=composed,
+        population=analysis_set or body.population,
         columns=body.columns,
         rows=body.rows,
         footnotes=body.footnotes,
         status="draft",
-        ai_generation_log={"note": "AI generation stub — replace with per-shell loop"},
+        ai_generation_log={
+            "note": "Created from TLF item",
+            "tlf_id": tlf.id,
+            "tlf_number": tlf.number,
+            "tlf_approved": tlf.status == "approved",
+        },
     )
     db.add(shell)
 
@@ -1051,13 +1144,97 @@ async def create_shell(
         tlf_id=body.tlf_id,
         shell_id=shell.id,
         target="shell",
-        after={"title": shell.title, "status": shell.status},
+        after={
+            "title": shell.title,
+            "subtitle": shell.subtitle,
+            "analysis_set": shell.analysis_set,
+            "tlf_number": shell.tlf_number,
+            "status": shell.status,
+        },
         actor="ai",
     )
 
     await db.flush()
     await db.refresh(shell)
     return shell
+
+
+@app.post(
+    "/studies/{study_id}/shells/generate-from-tlfs",
+    response_model=ShellBatchGenerateResponse,
+    tags=["Shells"],
+    summary="Create draft shells for all approved TLF items in the study",
+)
+async def generate_shells_from_tlfs(
+    study_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    POST /studies/{study_id}/shells/generate-from-tlfs
+
+    Iterates approved TLF items and creates a draft Shell for each one
+    that does not already have a shell.  Uses normalized TLF metadata as
+    the canonical shell title/subtitle/analysis_set.
+
+    Returns:
+      generated  – list of newly created ShellRead
+      skipped    – TLF IDs that were not approved (skipped)
+      warnings   – per-study warnings (e.g. no approved TLFs found)
+    """
+    await _get_study(study_id, db)
+
+    # All TLFs for the study
+    tlf_result = await db.execute(
+        select(TLF).where(TLF.study_id == study_id).order_by(TLF.order_index)
+    )
+    all_tlfs = tlf_result.scalars().all()
+
+    approved_tlfs = [t for t in all_tlfs if t.status == "approved"]
+    unapproved_ids = [t.id for t in all_tlfs if t.status != "approved"]
+
+    warnings: list = []
+    if not approved_tlfs:
+        warnings.append("No approved TLF items found. Approve at least one TLF before generating shells.")
+        return ShellBatchGenerateResponse(
+            generated=[],
+            skipped=unapproved_ids,
+            warnings=warnings,
+            total_generated=0,
+            total_skipped=len(unapproved_ids),
+        )
+
+    # Find TLFs that already have shells to avoid duplicating
+    existing_result = await db.execute(
+        select(Shell.tlf_id).where(Shell.study_id == study_id)
+    )
+    existing_tlf_ids = {row[0] for row in existing_result.fetchall()}
+
+    generated_shells: list = []
+    for tlf in approved_tlfs:
+        if tlf.id in existing_tlf_ids:
+            continue  # already has a shell — skip
+        shell = _shell_from_tlf(study_id, tlf)
+        if not shell.analysis_set:
+            warnings.append(
+                f"TLF {tlf.number}: analysis_set missing from approved TLF metadata — "
+                "shell created without analysis set."
+            )
+        db.add(shell)
+        generated_shells.append(shell)
+
+    if generated_shells:
+        await db.flush()
+        for s in generated_shells:
+            await db.refresh(s)
+
+    shell_reads = [ShellRead.model_validate(s) for s in generated_shells]
+    return ShellBatchGenerateResponse(
+        generated=shell_reads,
+        skipped=unapproved_ids,
+        warnings=warnings,
+        total_generated=len(generated_shells),
+        total_skipped=len(unapproved_ids),
+    )
 
 
 @app.get(
@@ -1078,7 +1255,7 @@ async def get_shell(
     "/studies/{study_id}/shells/{shell_id}/generate",
     response_model=ShellGenerateResponse,
     tags=["Shells"],
-    summary="AI-generate content for a shell (PRD §4.4)",
+    summary="AI-generate content for a shell using approved TLF metadata (PRD §4.4)",
 )
 async def generate_shell(
     study_id: str,
@@ -1090,23 +1267,65 @@ async def generate_shell(
 
     Runs the placeholder AI generation pipeline for a single shell.
 
-    Priority (PRD §4.4):
-      1. Parsed SAP/protocol chunks explicitly reference variables → source="sap_chunks"
-      2. Shell already has user-defined rows                       → source="user_variables"
-      3. Infer standard structure from title / type / context      → source="inferred"
+    The shell's approved TLF item is the canonical source of:
+      - number, title, subtitle, analysis_set, composed_title, section
 
-    Persists generated columns, rows, footnotes, and ai_generation_log back
-    to the Shell record.  Creates an audit Action and a Message for the
-    generation event.
+    Retrieval and content generation (rows/columns/footnotes) then uses those
+    structured fields as the retrieval query anchor, following PRD §4.4.
 
-    To integrate a real LLM: replace the body of _placeholder_generate_shell
-    with your LLM call — the signature and return dict shape are stable.
+    Priority for content:
+      1. Parsed SAP/protocol chunks present → source="sap_chunks"
+      2. Shell already has user-defined rows → source="user_variables" (kept)
+      3. Infer standard structure from normalized TLF metadata → source="inferred"
+
+    Generation is blocked if the linked TLF is not yet approved.
+
+    To integrate a real LLM: replace _placeholder_generate_shell body.
     """
     await _get_study(study_id, db)
     shell = await _get_shell(study_id, shell_id, db)
     tlf = await db.get(TLF, shell.tlf_id)
 
-    # Load all ready documents for this study
+    gen_warnings: list = []
+
+    # ── Guard: TLF must be approved ───────────────────────────────────────────
+    if not tlf:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Shell has no linked TLF item.",
+        )
+    if tlf.status != "approved":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"TLF {tlf.number} is not yet approved. "
+                "Approve the TLF list item before generating its shell."
+            ),
+        )
+
+    # ── Sync normalized TLF metadata → shell ─────────────────────────────────
+    # Do NOT overwrite fields the user has edited; only fill blanks.
+    if not shell.tlf_number:
+        shell.tlf_number = tlf.number
+    if not shell.tlf_section:
+        shell.tlf_section = tlf.section
+    if not shell.subtitle and tlf.subtitle:
+        shell.subtitle = tlf.subtitle
+    if not shell.analysis_set and tlf.analysis_set:
+        shell.analysis_set = tlf.analysis_set
+        shell.population = tlf.analysis_set
+    if not shell.composed_title:
+        shell.composed_title = tlf.composed_title or _compose_title(
+            shell.title, shell.subtitle, shell.analysis_set
+        )
+
+    if not shell.analysis_set:
+        gen_warnings.append(
+            f"TLF {tlf.number}: analysis_set missing from approved TLF metadata. "
+            "Shell generated without analysis set — please review."
+        )
+
+    # ── Load documents ────────────────────────────────────────────────────────
     docs_result = await db.execute(
         select(Document).where(
             Document.study_id == study_id,
@@ -1115,27 +1334,34 @@ async def generate_shell(
     )
     documents = list(docs_result.scalars().all())
 
-    # Find a matching GlobalRequirement by section keyword heuristic
+    # ── Match GlobalRequirement by section ────────────────────────────────────
     global_req = None
     gr_result = await db.execute(
         select(GlobalRequirement).where(GlobalRequirement.study_id == study_id)
     )
-    title_lower = (shell.title or "").lower()
+    section_key = (shell.tlf_section or shell.title or "").lower()
     for req in gr_result.scalars().all():
-        section = (req.section_type or "").lower()
-        if section in title_lower or (tlf and section in (tlf.section_ref or "").lower()):
+        sec = (req.section_type or "").lower()
+        if sec in section_key or (tlf.section_ref and sec in (tlf.section_ref or "").lower()):
             global_req = req
             break
 
-    # Retrieve relevant document chunks (keyword-based stub)
+    # ── Build retrieval query from structured TLF metadata ───────────────────
+    retrieval_title = " ".join(filter(None, [
+        shell.tlf_number,
+        shell.title,
+        shell.subtitle,
+        shell.analysis_set,
+        shell.tlf_section,
+    ]))
     relevant_chunks = _retrieve_relevant_chunks(
-        documents, shell.title or "", shell.type or "table"
+        documents, retrieval_title, shell.type or "table"
     )
 
-    # Run placeholder generation
+    # ── Run placeholder generation ────────────────────────────────────────────
     result = _placeholder_generate_shell(shell, tlf, relevant_chunks, global_req)
 
-    # Persist generated output back to the Shell
+    # ── Persist ───────────────────────────────────────────────────────────────
     before_state = {
         "columns": shell.columns,
         "rows": shell.rows,
@@ -1148,11 +1374,15 @@ async def generate_shell(
         "source": result["source"],
         "explanation": result["explanation"],
         "chunks_used": result["chunks_used"],
+        "tlf_number": shell.tlf_number,
+        "tlf_section": shell.tlf_section,
+        "analysis_set": shell.analysis_set,
+        "composed_title": shell.composed_title,
         "generated_at": datetime.utcnow().isoformat(),
     }
     shell.updated_at = datetime.utcnow()
 
-    # Audit action
+    # ── Audit ─────────────────────────────────────────────────────────────────
     await _log_action(
         db,
         study_id=study_id,
@@ -1166,23 +1396,32 @@ async def generate_shell(
             "rows": result["rows"],
             "footnotes": result["footnotes"],
             "source": result["source"],
+            "tlf_number": shell.tlf_number,
+            "title_initialized_from_tlf": True,
+            "analysis_set_initialized_from_tlf": bool(shell.analysis_set),
         },
         actor="ai",
     )
 
-    # Chat message summarising the generation event
+    # ── Chat message ──────────────────────────────────────────────────────────
+    explanation_text = result["explanation"]
+    if gen_warnings:
+        explanation_text += "\n\nWarnings:\n" + "\n".join(f"• {w}" for w in gen_warnings)
+
     gen_msg = Message(
         id=str(uuid.uuid4()),
         study_id=study_id,
         tlf_id=shell.tlf_id,
         shell_id=shell_id,
         role="ai",
-        text=result["explanation"],
+        text=explanation_text,
         timestamp=datetime.utcnow(),
         extra_metadata={
             "event": "shell_generated",
             "source": result["source"],
             "chunks_used": result["chunks_used"],
+            "tlf_number": shell.tlf_number,
+            "analysis_set": shell.analysis_set,
         },
     )
     db.add(gen_msg)
@@ -1190,11 +1429,13 @@ async def generate_shell(
     await db.flush()
     await db.refresh(shell)
 
+    shell_read = ShellRead.model_validate(shell)
     return ShellGenerateResponse(
-        shell=ShellRead.model_validate(shell),
+        shell=shell_read,
         explanation=result["explanation"],
         source=result["source"],
         chunks_used=result["chunks_used"],
+        warnings=gen_warnings + shell_read.warnings,
     )
 
 
@@ -1233,6 +1474,8 @@ async def update_shell(
         action_map = {
             "title": "update_title",
             "subtitle": "update_subtitle",
+            "analysis_set": "update_population",
+            "composed_title": "update_title",
             "population": "update_population",
             "columns": "update_column",
             "rows": "update_row",

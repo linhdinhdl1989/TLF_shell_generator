@@ -121,6 +121,10 @@ class TLF(Base):
 
     number = Column(String, nullable=False)          # e.g. "14.1.1"
     title = Column(String, nullable=False)
+    subtitle = Column(String)                        # e.g. "By Treatment Group"
+    analysis_set = Column(String)                    # e.g. "Safety Population"
+    composed_title = Column(String)                  # "{title}. {subtitle} ({analysis_set})"
+    section = Column(String)                         # category: demographics|safety|efficacy|other
     type = Column(
         Enum("table", "listing", "figure", name="tlf_type"),
         nullable=False,
@@ -170,9 +174,14 @@ class Shell(Base):
         nullable=False,
         default="table",
     )
+    # Normalized title metadata — copied from approved TLF item
+    tlf_number = Column(String)                      # e.g. "14.1.1"
+    tlf_section = Column(String)                     # e.g. "demographics"
     title = Column(String, nullable=False)
-    subtitle = Column(String)
-    population = Column(String)                      # e.g. "Full Analysis Set"
+    subtitle = Column(String)                        # e.g. "By Treatment Group"
+    analysis_set = Column(String)                    # e.g. "Safety Population"
+    composed_title = Column(String)                  # full display title
+    population = Column(String)                      # legacy / display alias for analysis_set
 
     # JSONB in Postgres, JSON in SQLite
     columns = Column(JSON, default=list, nullable=False)

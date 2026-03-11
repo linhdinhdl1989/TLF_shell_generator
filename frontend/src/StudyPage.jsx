@@ -621,9 +621,13 @@ function AIShellsTab({ studyId }) {
   // save-state: "idle" | "saving" | "saved" | "error"
   const [saveState, setSaveState] = useState("idle");
 
-  // generation state
+  // per-shell generation state
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateError, setGenerateError] = useState(null);
+
+  // batch generation from approved TLFs
+  const [isBatchGenerating, setIsBatchGenerating] = useState(false);
+  const [batchResult, setBatchResult] = useState(null); // {generated, skipped, warnings}
 
   // per-shell chat history: { [shellId]: [{role, text}] }
   const [chatByShellId, setChatByShellId] = useState({});
@@ -653,7 +657,8 @@ function AIShellsTab({ studyId }) {
       })
       .then((data) => {
         if (cancelled) return;
-        const list = Array.isArray(data) ? data : [];
+        // Backend returns { shells: [...], total: N }
+        const list = Array.isArray(data) ? data : (data.shells || []);
         setShells(list);
         if (list.length > 0) setSelectedId(list[0].id);
         setLoadingShells(false);
@@ -751,34 +756,43 @@ function AIShellsTab({ studyId }) {
     updateActiveShell({ columns: activeShell.columns.map((c) => (c.id === colId ? { ...c, ...patch } : c)) });
   };
 
-  // ── Add new shell via POST ──
-  const addShell = async () => {
-    const payload = {
-      type: "table",
-      title: "New Shell",
-      population: "Analysis Set",
-      columns: [
-        { id: 1, label: "Parameter", width: 200 },
-        { id: 2, label: "Value", width: 140 },
-      ],
-      rows: [{ id: 1, label: "Row 1", indent: 0, isHeader: false }],
-      footnotes: [],
-    };
+  // ── Generate shells from approved TLF items (batch) ──
+  const generateFromTlfs = useCallback(async () => {
+    if (isBatchGenerating) return;
+    setIsBatchGenerating(true);
+    setBatchResult(null);
+    setShellsError(null);
     try {
-      const r = await fetch(`${API_BASE}/studies/${studyId}/shells`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!r.ok) throw new Error(`Create failed (${r.status})`);
-      const created = await r.json();
-      setShells((prev) => [...prev, created]);
-      setSelectedId(created.id);
+      const r = await fetch(
+        `${API_BASE}/studies/${studyId}/shells/generate-from-tlfs`,
+        { method: "POST" }
+      );
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.detail || `Request failed (${r.status})`);
+      }
+      const data = await r.json();
+      setBatchResult(data);
+      if (data.generated && data.generated.length > 0) {
+        setShells((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newShells = data.generated.filter((s) => !existingIds.has(s.id));
+          const merged = [...prev, ...newShells];
+          if (!selectedId && merged.length > 0) setSelectedId(merged[0].id);
+          return merged;
+        });
+      }
+      if (data.warnings && data.warnings.length > 0 && data.total_generated === 0) {
+        setShellsError(data.warnings[0]);
+        setTimeout(() => setShellsError(null), 8000);
+      }
     } catch (err) {
-      setShellsError(err.message || "Failed to create shell");
-      setTimeout(() => setShellsError(null), 4000);
+      setShellsError(err.message || "Failed to generate shells from TLF list");
+      setTimeout(() => setShellsError(null), 5000);
+    } finally {
+      setIsBatchGenerating(false);
     }
-  };
+  }, [isBatchGenerating, studyId, selectedId]);
 
   // ── AI actions via backend chat ──
   const handleAiAction = useCallback(
@@ -950,11 +964,12 @@ function AIShellsTab({ studyId }) {
               <Download size={14} />
             </button>
             <button
-              onClick={addShell}
-              title="Add shell"
-              className="p-1.5 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 transition"
+              onClick={generateFromTlfs}
+              disabled={isBatchGenerating}
+              title="Generate shells from approved TLF items"
+              className="p-1.5 rounded hover:bg-gray-100 text-gray-400 hover:text-indigo-600 disabled:opacity-40 transition"
             >
-              <Plus size={14} />
+              {isBatchGenerating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
             </button>
           </div>
         </div>
@@ -965,13 +980,24 @@ function AIShellsTab({ studyId }) {
             <p className="text-xs text-red-600">{shellsError}</p>
           </div>
         )}
+        {batchResult && batchResult.total_generated > 0 && (
+          <div className="mx-3 mt-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
+            Generated {batchResult.total_generated} shell(s) from approved TLF items.
+            {batchResult.total_skipped > 0 && ` ${batchResult.total_skipped} unapproved item(s) skipped.`}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
           {shells.length === 0 ? (
             <div className="p-6 text-center text-gray-400 text-xs">
-              No shells yet.
-              <button onClick={addShell} className="block mt-2 mx-auto text-indigo-600 hover:underline text-xs font-medium">
-                + Add first shell
+              <p>No shells yet.</p>
+              <p className="mt-1 text-gray-400">Approve TLF items first, then click + to generate shells.</p>
+              <button
+                onClick={generateFromTlfs}
+                disabled={isBatchGenerating}
+                className="block mt-2 mx-auto text-indigo-600 hover:underline text-xs font-medium disabled:opacity-50"
+              >
+                {isBatchGenerating ? "Generating…" : "+ Generate from approved TLFs"}
               </button>
             </div>
           ) : (
@@ -983,8 +1009,18 @@ function AIShellsTab({ studyId }) {
                   shell.id === selectedId ? "bg-indigo-50 border-l-[3px] border-indigo-500" : "border-l-[3px] border-transparent"
                 }`}
               >
-                <p className="text-xs font-mono font-semibold text-indigo-600 truncate">{shell.tlf_id || shell.id}</p>
+                <p className="text-xs font-mono font-semibold text-indigo-600 truncate">
+                  {shell.tlf_number || shell.tlf_id || shell.id}
+                </p>
                 <p className="text-xs text-gray-700 mt-0.5 line-clamp-2 leading-snug">{shell.title}</p>
+                {shell.analysis_set && (
+                  <p className="text-xs text-gray-400 truncate mt-0.5">{shell.analysis_set}</p>
+                )}
+                {shell.warnings && shell.warnings.length > 0 && (
+                  <span className="inline-flex items-center gap-0.5 text-xs text-amber-600 mt-0.5">
+                    <AlertCircle size={10} /> Review needed
+                  </span>
+                )}
                 <div className="mt-1.5">
                   <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${SHELL_STATUS_COLORS[shell.status] || "bg-gray-100 text-gray-500"}`}>
                     {shell.status === "generated" ? "✓ GENERATED" : (shell.status || "PENDING").toUpperCase()}
@@ -1004,7 +1040,7 @@ function AIShellsTab({ studyId }) {
             {/* Top bar */}
             <div className="bg-white rounded-xl border border-gray-200 px-5 py-3 flex items-center gap-3 flex-wrap">
               <span className="text-xs font-mono font-bold text-white bg-indigo-600 px-2 py-0.5 rounded">
-                {activeShell.tlf_id || activeShell.id}
+                {activeShell.tlf_number || activeShell.tlf_id || activeShell.id}
               </span>
               <input
                 value={activeShell.title}
@@ -1042,14 +1078,48 @@ function AIShellsTab({ studyId }) {
             {/* Header Information */}
             <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
               <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Header Information</h4>
+              {/* Analysis set missing warning */}
+              {activeShell.warnings && activeShell.warnings.length > 0 && (
+                <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                  <AlertCircle size={13} className="text-amber-500 mt-0.5 flex-shrink-0" />
+                  <div>
+                    {activeShell.warnings.map((w, i) => (
+                      <p key={i} className="text-xs text-amber-700">{w}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Composed title display */}
+              {activeShell.composed_title && (
+                <div className="mb-3 px-3 py-2 bg-gray-50 rounded-lg">
+                  <p className="text-xs font-medium text-gray-500 mb-0.5">Composed Title (from approved TLF)</p>
+                  <p className="text-xs text-gray-700 italic">{activeShell.composed_title}</p>
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Population</label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Analysis Set
+                    {!activeShell.analysis_set && (
+                      <span className="ml-1 text-amber-500 text-xs font-normal">(missing)</span>
+                    )}
+                  </label>
                   <input
-                    value={activeShell.population || ""}
-                    onChange={(e) => updateActiveShell({ population: e.target.value })}
+                    value={activeShell.analysis_set || ""}
+                    onChange={(e) => updateActiveShell({ analysis_set: e.target.value, population: e.target.value })}
+                    className={`w-full text-sm border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400 ${
+                      !activeShell.analysis_set ? "border-amber-300 bg-amber-50" : "border-gray-300"
+                    }`}
+                    placeholder="e.g. Safety Population"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Subtitle</label>
+                  <input
+                    value={activeShell.subtitle || ""}
+                    onChange={(e) => updateActiveShell({ subtitle: e.target.value })}
                     className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                    placeholder="e.g. Safety Analysis Set"
+                    placeholder="e.g. By Treatment Group"
                   />
                 </div>
                 <div>
@@ -1196,11 +1266,22 @@ function AIShellsTab({ studyId }) {
                 <span className="font-semibold text-gray-700 text-sm">Live Mock Output</span>
               </div>
               <div className="overflow-x-auto p-3">
-                {/* Title block */}
+                {/* Title block — use composed_title if available */}
                 <div className="mb-2 pb-2 border-b border-gray-300">
-                  <p className="text-xs font-semibold text-gray-800 leading-snug">{activeShell.title || "Untitled Shell"}</p>
-                  {activeShell.population && (
-                    <p className="text-xs text-gray-500 mt-0.5">{activeShell.population}</p>
+                  {activeShell.tlf_number && (
+                    <p className="text-xs font-mono text-indigo-500 mb-0.5">{activeShell.tlf_number}</p>
+                  )}
+                  <p className="text-xs font-semibold text-gray-800 leading-snug">
+                    {activeShell.composed_title || activeShell.title || "Untitled Shell"}
+                  </p>
+                  {activeShell.subtitle && !activeShell.composed_title && (
+                    <p className="text-xs text-gray-600 mt-0.5 italic">{activeShell.subtitle}</p>
+                  )}
+                  {activeShell.analysis_set && !activeShell.composed_title && (
+                    <p className="text-xs text-gray-500 mt-0.5">({activeShell.analysis_set})</p>
+                  )}
+                  {!activeShell.analysis_set && (
+                    <p className="text-xs text-amber-500 mt-0.5 italic">Analysis set not specified</p>
                   )}
                 </div>
                 {/* Table */}
@@ -1337,8 +1418,16 @@ function AIShellsTab({ studyId }) {
           <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-3">
             <Layers size={32} className="opacity-30" />
             <p className="text-sm">No shells yet for this study.</p>
-            <button onClick={addShell} className="flex items-center gap-1.5 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition">
-              <Plus size={14} /> Create First Shell
+            <p className="text-xs text-gray-400 text-center max-w-xs">
+              Approve TLF list items in the TLF List tab, then generate shells from them.
+            </p>
+            <button
+              onClick={generateFromTlfs}
+              disabled={isBatchGenerating}
+              className="flex items-center gap-1.5 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-60"
+            >
+              {isBatchGenerating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {isBatchGenerating ? "Generating…" : "Generate from Approved TLFs"}
             </button>
           </div>
         ) : (

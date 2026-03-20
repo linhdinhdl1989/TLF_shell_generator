@@ -1355,6 +1355,232 @@ function AIShellsTab({ studyId, studyName }) {
   );
 }
 
+// ─── Studies List Page ────────────────────────────────────────────────────────
+
+function StudiesListPage({ onSelectStudy }) {
+  const [studies, setStudies] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(null);
+
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchError(null);
+
+    fetch(`${API_BASE}/studies`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Server error ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setStudies(Array.isArray(data) ? data : []);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setFetchError(err.message || "Failed to load studies");
+        setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  const createStudy = async () => {
+    if (!newName.trim() || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const r = await fetch(`${API_BASE}/studies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() }),
+      });
+      if (!r.ok) throw new Error(`Create failed (${r.status})`);
+      const created = await r.json();
+      const displayName = created.name || created.study_code || created.title || String(created.id);
+      setStudies((prev) => [...prev, created]);
+      setShowCreate(false);
+      setNewName("");
+      setNewDesc("");
+      onSelectStudy({ id: created.id, name: displayName });
+    } catch (err) {
+      setCreateError(err.message || "Failed to create study");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const Section = ({ children }) => (
+    <div className="max-w-4xl mx-auto px-6 py-8">{children}</div>
+  );
+
+  return (
+    <div className="min-h-screen bg-gray-50 font-sans">
+      {/* ── Top Nav ── */}
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center">
+              <Layers size={16} className="text-indigo-600" />
+            </div>
+            <span className="font-bold text-gray-900">
+              <span className="text-indigo-600">TLF</span>Gen
+            </span>
+          </div>
+          <nav className="hidden md:flex items-center gap-6 text-sm text-gray-500">
+            <button className="hover:text-gray-800 transition flex items-center gap-1.5">
+              <Table size={14} /> Dashboard
+            </button>
+            <button className="text-indigo-600 font-medium flex items-center gap-1.5">
+              <FileText size={14} /> Studies
+            </button>
+            <button className="hover:text-gray-800 transition flex items-center gap-1.5">
+              <Settings size={14} /> Settings
+            </button>
+          </nav>
+          <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+            JD
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl font-black text-gray-900">Studies</h1>
+            <p className="text-sm text-gray-500 mt-0.5">Select a study to view or create a new one.</p>
+          </div>
+          <button
+            onClick={() => { setShowCreate(true); setCreateError(null); }}
+            className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2.5 rounded-lg hover:bg-indigo-700 transition shadow-sm"
+          >
+            <Plus size={14} /> New Study
+          </button>
+        </div>
+
+        {/* Create study panel */}
+        {showCreate && (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-semibold text-gray-800">Create New Study</h2>
+              <button
+                onClick={() => { setShowCreate(false); setNewName(""); setNewDesc(""); setCreateError(null); }}
+                className="text-gray-400 hover:text-gray-600 transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Study Name / Code <span className="text-red-500">*</span></label>
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && createStudy()}
+                  placeholder="e.g. ABC-202"
+                  className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+                <input
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && createStudy()}
+                  placeholder="e.g. Phase 3 trial for hypertension"
+                  className="w-full text-sm border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+            </div>
+            {createError && (
+              <div className="flex items-center gap-2 text-xs text-red-600 mb-3">
+                <AlertCircle size={12} /> {createError}
+              </div>
+            )}
+            <div className="flex gap-3">
+              <button
+                onClick={createStudy}
+                disabled={!newName.trim() || creating}
+                className="flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition disabled:opacity-50"
+              >
+                {creating ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                Create Study
+              </button>
+              <button
+                onClick={() => { setShowCreate(false); setNewName(""); setNewDesc(""); setCreateError(null); }}
+                className="text-sm text-gray-500 hover:text-gray-800 px-3 py-2 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Studies list */}
+        {loading ? (
+          <div className="flex items-center justify-center h-48 gap-2 text-gray-400">
+            <Loader2 size={20} className="animate-spin" />
+            <span className="text-sm">Loading studies…</span>
+          </div>
+        ) : fetchError ? (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 flex items-start gap-3">
+            <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-red-700">Could not load studies</p>
+              <p className="text-xs text-red-500 mt-0.5">{fetchError}</p>
+            </div>
+          </div>
+        ) : studies.length === 0 ? (
+          <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
+            <Layers size={32} className="mx-auto text-gray-300 mb-3" />
+            <p className="text-sm font-medium text-gray-500">No studies yet</p>
+            <p className="text-xs text-gray-400 mt-1 mb-4">Create your first study to get started.</p>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="inline-flex items-center gap-2 bg-indigo-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-indigo-700 transition"
+            >
+              <Plus size={14} /> New Study
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {studies.map((study) => {
+              const displayName = study.name || study.study_code || study.title || String(study.id);
+              return (
+                <button
+                  key={study.id}
+                  onClick={() => onSelectStudy({ id: study.id, name: displayName })}
+                  className="bg-white rounded-xl border border-gray-200 p-5 text-left hover:border-indigo-300 hover:shadow-md transition group"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <span className="text-xs font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">
+                      {displayName}
+                    </span>
+                    <span className="text-gray-300 group-hover:text-indigo-400 transition flex-shrink-0 mt-0.5">
+                      <ArrowLeft size={14} className="rotate-180" />
+                    </span>
+                  </div>
+                  {study.description && (
+                    <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed">{study.description}</p>
+                  )}
+                  <p className="text-xs text-gray-400 mt-2">ID: {study.id}</p>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
 // ─── Main StudyPage ───────────────────────────────────────────────────────────
 
 const TABS = [
@@ -1364,7 +1590,7 @@ const TABS = [
   { id: "shells", label: "AI Shells", icon: Layers },
 ];
 
-export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
+export function StudyPage({ studyId = 1, studyName = "XYZ-101", onNavigateBack }) {
   const [activeTab, setActiveTab] = useState("documents");
   const [description, setDescription] = useState("Phase 3 clinical trial for a new hypertension medication.");
   const [showGlobalReqPanel, setShowGlobalReqPanel] = useState(false);
@@ -1393,7 +1619,10 @@ export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
             <button className="hover:text-gray-800 transition flex items-center gap-1.5">
               <Table size={14} /> Dashboard
             </button>
-            <button className="hover:text-gray-800 transition flex items-center gap-1.5 text-indigo-600 font-medium">
+            <button
+              onClick={onNavigateBack}
+              className="hover:text-gray-800 transition flex items-center gap-1.5 text-indigo-600 font-medium"
+            >
               <FileText size={14} /> Studies
             </button>
             <button className="hover:text-gray-800 transition flex items-center gap-1.5">
@@ -1411,7 +1640,7 @@ export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
         <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
           <button className="hover:text-gray-600 transition">Dashboard</button>
           <span>/</span>
-          <button className="hover:text-gray-600 transition flex items-center gap-1">
+          <button onClick={onNavigateBack} className="hover:text-gray-600 transition flex items-center gap-1">
             <ArrowLeft size={13} /> Studies
           </button>
           <span>/</span>
@@ -1490,4 +1719,33 @@ export default function StudyPage({ studyId = 1, studyName = "XYZ-101" }) {
       </main>
     </div>
   );
+}
+
+// ─── App (root – manages view routing) ───────────────────────────────────────
+
+export default function App() {
+  // view: "studies" | "study"
+  const [view, setView] = useState("studies");
+  const [currentStudy, setCurrentStudy] = useState(null); // { id, name }
+
+  const openStudy = (study) => {
+    setCurrentStudy(study);
+    setView("study");
+  };
+
+  const goToStudies = () => {
+    setView("studies");
+  };
+
+  if (view === "study" && currentStudy) {
+    return (
+      <StudyPage
+        studyId={currentStudy.id}
+        studyName={currentStudy.name}
+        onNavigateBack={goToStudies}
+      />
+    );
+  }
+
+  return <StudiesListPage onSelectStudy={openStudy} />;
 }

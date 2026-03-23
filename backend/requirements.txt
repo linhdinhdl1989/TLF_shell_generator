@@ -59,8 +59,8 @@ openpyxl>=3.1.2                  # Excel (.xlsx) extraction
 # ─────────────────────────────────────────────
 # Export (Phase 1 export endpoints)
 # ─────────────────────────────────────────────
-python-docx>=1.1.0               # Word export (.docx shell documents)
-# openpyxl>=3.1.2                  # Excel export (deferred)
+# python-docx — see Document parsing block above
+# openpyxl — see Document parsing block above
 
 # ─────────────────────────────────────────────
 # Dev / testing

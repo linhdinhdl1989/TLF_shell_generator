@@ -98,7 +98,7 @@ def test_finds_stratified_by():
 
 def test_returns_none_when_no_grouping():
     result = _find_grouping_context("No grouping information here.", {})
-    assert result is None or isinstance(result, str)
+    assert result is None
 
 
 def test_falls_back_to_global_context():
@@ -142,7 +142,7 @@ def test_falls_back_to_global_analysis_set():
 def test_extracts_default_analysis_set_from_sap(sap_text):
     ctx = _extract_global_context(sap_text)
     assert "default_analysis_set" in ctx
-    assert ctx["default_analysis_set"] != ""
+    assert "safety population" in ctx["default_analysis_set"].lower()
 
 
 # ---------------------------------------------------------------------------

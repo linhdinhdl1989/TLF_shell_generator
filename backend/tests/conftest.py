@@ -1,6 +1,7 @@
 """Shared pytest fixtures for backend tests."""
 import io
 import pytest
+import openpyxl
 from docx import Document as DocxDocument
 
 
@@ -62,7 +63,6 @@ def minimal_docx_bytes():
 @pytest.fixture
 def minimal_xlsx_bytes():
     """In-memory .xlsx with known content."""
-    import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "TLF List"

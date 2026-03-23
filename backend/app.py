@@ -361,51 +361,41 @@ def _action_to_event(action: Action) -> AuditEventRead:
 # Background task: document parse stub  (PRD §4.7)
 # ---------------------------------------------------------------------------
 
-async def _parse_document_stub(doc_id: str) -> None:
+async def _parse_document(doc_id: str, file_bytes: bytes, filename: str) -> None:
     """
-    Stub for the parse-once pipeline (PRD §4.7).
+    Background task: parse-once pipeline (PRD §4.7).
 
-    Real implementation would:
-      1. Retrieve raw bytes from temporary storage.
-      2. Extract text (pdfplumber / python-docx / openpyxl).
-      3. Fallback OCR for scanned PDFs.
-      4. Split into chunks with section_ref tags.
-      5. Embed chunks (pgvector / external API).
-      6. Store parsed_content + chunks_meta on Document row.
-      7. Delete raw file.
-      8. Set status = "ready" (or "error" on failure).
-
-    The stub simply marks the document as "ready" after a simulated delay.
-    Replace with a Celery/ARQ/BackgroundTasks task in production.
+    Extracts text + chunks from raw bytes, stores results on the Document row,
+    then marks the document as 'ready'. Runs outside the request session.
     """
-    import asyncio
-
-    # Simulate I/O work (parsing, embedding)
-    await asyncio.sleep(0.5)
-
-    # Re-open a fresh session — background tasks run outside the request session
     from database import AsyncSessionLocal
+    from services.document_parser import parse_document, UnsupportedDocumentType
 
     async with AsyncSessionLocal() as session:
         doc = await session.get(Document, doc_id)
         if doc is None:
             return
-        if doc.status == "processing":
-            doc.parsed_content = (
-                f"[STUB] Parsed content for document '{doc.name}' "
-                "(replace with real extraction pipeline)"
-            )
-            doc.chunks_meta = [
-                {
-                    "chunk_id": str(uuid.uuid4()),
-                    "section_ref": "Section 1",
-                    "text": f"[STUB] Chunk 1 from {doc.name}",
-                    "embedding_id": None,
-                }
-            ]
+        if doc.status != "processing":
+            return
+
+        try:
+            parsed = parse_document(file_bytes, filename, doc.type)
+            doc.parsed_content = parsed["parsed_content"]
+            doc.chunks_meta = parsed["chunks_meta"]
             doc.status = "ready"
-            doc.updated_at = datetime.utcnow()
-            await session.commit()
+        except UnsupportedDocumentType as exc:
+            doc.parsed_content = None
+            doc.chunks_meta = []
+            doc.status = "error"
+            doc.error_message = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            doc.parsed_content = None
+            doc.chunks_meta = []
+            doc.status = "error"
+            doc.error_message = f"Parse failed: {exc}"
+
+        doc.updated_at = datetime.utcnow()
+        await session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -548,8 +538,8 @@ async def upload_document(
         after={"name": doc.name, "type": doc.type, "doc_id": doc.id, "file_size": doc.file_size},
     )
 
-    # Fire-and-forget parse pipeline (stub)
-    background_tasks.add_task(_parse_document_stub, doc.id)
+    # Fire-and-forget parse pipeline
+    background_tasks.add_task(_parse_document, doc.id, file_bytes, file.filename or "")
 
     return doc
 

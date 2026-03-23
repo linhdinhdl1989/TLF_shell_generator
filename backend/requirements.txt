@@ -36,12 +36,11 @@ python-dotenv>=1.0.0               # load .env for local dev
 # ─────────────────────────────────────────────
 # Document parsing (Phase 1 parse-once pipeline)
 # ─────────────────────────────────────────────
-# Uncomment as the parse pipeline is implemented:
-# pdfplumber>=0.11.0               # PDF text + table extraction
-# python-docx>=1.1.0               # Word (.docx) extraction
+pdfplumber>=0.11.0               # PDF text + table extraction
+python-docx>=1.1.0               # Word (.docx) extraction
 openpyxl>=3.1.2                  # Excel (.xlsx) extraction
-# pytesseract>=0.3.10              # OCR fallback for scanned PDFs
-# Pillow>=10.3.0                   # image pre-processing for OCR
+# pytesseract>=0.3.10              # OCR fallback (deferred)
+# Pillow>=10.3.0                   # image pre-processing for OCR (deferred)
 
 # ─────────────────────────────────────────────
 # AI integration (Phase 1 per-shell AI loop)
@@ -60,12 +59,12 @@ openpyxl>=3.1.2                  # Excel (.xlsx) extraction
 # ─────────────────────────────────────────────
 # Export (Phase 1 export endpoints)
 # ─────────────────────────────────────────────
-python-docx>=1.1.0               # Word export (.docx shell documents)
-# openpyxl>=3.1.2                  # Excel export (deferred)
+# python-docx — see Document parsing block above
+# openpyxl — see Document parsing block above
 
 # ─────────────────────────────────────────────
 # Dev / testing
 # ─────────────────────────────────────────────
-# pytest>=8.2.0
-# pytest-asyncio>=0.23.0
-# httpx>=0.27.0                    # async test client for FastAPI
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0                    # async test client for FastAPI

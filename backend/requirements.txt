@@ -1,0 +1,71 @@
+# TLF Shell Generator — backend dependencies
+#
+# Install:  pip install -r requirements.txt
+# Dev run:  uvicorn app:app --reload
+#
+# ─────────────────────────────────────────────
+# Core framework
+# ─────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0          # includes websockets + httptools
+
+# ─────────────────────────────────────────────
+# Database — async ORM
+# ─────────────────────────────────────────────
+sqlalchemy>=2.0.30                 # async-native ORM (2.x API)
+aiosqlite>=0.20.0                  # SQLite async driver  (dev / testing)
+asyncpg>=0.29.0                    # Postgres async driver (production)
+
+# ─────────────────────────────────────────────
+# API validation
+# ─────────────────────────────────────────────
+pydantic>=2.7.0                    # v2 required (model_config, model_dump)
+pydantic-settings>=2.2.0           # env-var settings (future auth/config)
+
+# ─────────────────────────────────────────────
+# File uploads
+# ─────────────────────────────────────────────
+python-multipart>=0.0.9            # required for FastAPI File/Form uploads
+aiofiles>=23.2.0                   # async file I/O in background tasks
+
+# ─────────────────────────────────────────────
+# Environment / config
+# ─────────────────────────────────────────────
+python-dotenv>=1.0.0               # load .env for local dev
+
+# ─────────────────────────────────────────────
+# Document parsing (Phase 1 parse-once pipeline)
+# ─────────────────────────────────────────────
+# Uncomment as the parse pipeline is implemented:
+# pdfplumber>=0.11.0               # PDF text + table extraction
+# python-docx>=1.1.0               # Word (.docx) extraction
+openpyxl>=3.1.2                  # Excel (.xlsx) extraction
+# pytesseract>=0.3.10              # OCR fallback for scanned PDFs
+# Pillow>=10.3.0                   # image pre-processing for OCR
+
+# ─────────────────────────────────────────────
+# AI integration (Phase 1 per-shell AI loop)
+# ─────────────────────────────────────────────
+# Uncomment when wiring up the Biostat Expert → Builder → Reviewer loop:
+# anthropic>=0.25.0                # Claude API client (recommended)
+# openai>=1.30.0                   # alternate AI provider
+
+# ─────────────────────────────────────────────
+# Vector search (chunk retrieval, Phase 1)
+# ─────────────────────────────────────────────
+# Uncomment when embedding / retrieval is added:
+# pgvector>=0.2.4                  # pgvector SQLAlchemy support
+# numpy>=1.26.0
+
+# ─────────────────────────────────────────────
+# Export (Phase 1 export endpoints)
+# ─────────────────────────────────────────────
+python-docx>=1.1.0               # Word export (.docx shell documents)
+# openpyxl>=3.1.2                  # Excel export (deferred)
+
+# ─────────────────────────────────────────────
+# Dev / testing
+# ─────────────────────────────────────────────
+# pytest>=8.2.0
+# pytest-asyncio>=0.23.0
+# httpx>=0.27.0                    # async test client for FastAPI

@@ -592,11 +592,29 @@ export default function TLFListTab({ studyId }) {
 
       {/* ── Stats strip ───────────────────────────────────────────────────── */}
       {total > 0 && (
-        <div className="flex items-center gap-4 text-sm text-gray-600">
-          <span><span className="font-medium text-gray-900">{total}</span> entries</span>
-          <span><span className="font-medium text-green-700">{approvedCount}</span> approved</span>
-          <span><span className="font-medium text-yellow-700">{total - approvedCount}</span> pending</span>
-          {selected.size > 0 && <span><span className="font-medium text-blue-700">{selected.size}</span> selected</span>}
+        <div className="space-y-1.5">
+          {/* Progress bar */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-green-500 rounded-full transition-all duration-300"
+                style={{ width: total > 0 ? `${(approvedCount / total) * 100}%` : "0%" }}
+              />
+            </div>
+            <span className="text-xs text-gray-500 whitespace-nowrap">
+              {approvedCount}/{total} approved
+            </span>
+          </div>
+          {/* Counts row */}
+          <div className="flex items-center gap-4 text-sm text-gray-600">
+            <span><span className="font-medium text-gray-900">{total}</span> entries</span>
+            <span><span className="font-medium text-green-700">{approvedCount}</span> approved</span>
+            <span><span className="font-medium text-yellow-700">{total - approvedCount}</span> pending</span>
+            {selected.size > 0 && <span><span className="font-medium text-blue-700">{selected.size}</span> selected</span>}
+            {(search || filterSection !== "all" || filterStatus !== "all") && filteredItems.length !== total && (
+              <span className="text-gray-400">— showing <span className="font-medium text-gray-600">{filteredItems.length}</span> of {total}</span>
+            )}
+          </div>
         </div>
       )}
 

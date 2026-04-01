@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Link } from "react-router-dom";
 import TLFListTab from "./TLFListTab";
 import {
   ArrowLeft,
@@ -2468,11 +2469,11 @@ export default function StudyPage({ studyId = "XYZ-101", studyName = "XYZ-101" }
       <main className="max-w-7xl mx-auto px-6 py-6">
         {/* ── Breadcrumb ── */}
         <div className="flex items-center gap-2 text-sm text-gray-400 mb-4">
-          <button className="hover:text-gray-600 transition">Dashboard</button>
+          <Link to="/" className="hover:text-gray-600 transition">Dashboard</Link>
           <span>/</span>
-          <button className="hover:text-gray-600 transition flex items-center gap-1">
+          <Link to="/studies" className="hover:text-gray-600 transition flex items-center gap-1">
             <ArrowLeft size={13} /> Studies
-          </button>
+          </Link>
           <span>/</span>
           <span className="text-gray-700 font-medium">Study {studyName}</span>
         </div>

@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python3 -m pip install -r /home/linh/Documents/TLF_shell_generator-main/backend/requirements.txt)",
+      "Read(//usr/bin/**)",
+      "Read(//home/linh/.local/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(conda info:*)",
+      "Bash(conda run:*)",
+      "Bash(ls ~/anaconda3/bin/pip* ~/miniconda3/bin/pip*)",
+      "Bash(env)",
+      "Bash(python3 -c \"import sys; print\\(sys.executable, sys.version\\)\")",
+      "Bash(python3 -c \"import site; print\\(site.getsitepackages\\(\\)\\)\")",
+      "Bash(python3 -c \"import pdfplumber\")",
+      "Bash(python3 -c \"import docx\")",
+      "Bash(python3 -c \"import pytest\")",
+      "Bash(python3 -c \"import openpyxl\")",
+      "Bash(python3 -m ensurepip)",
+      "Bash(python3 -c \"import urllib.request; urllib.request.urlretrieve\\(''''https://bootstrap.pypa.io/get-pip.py'''', ''''/tmp/get-pip.py''''\\)\")",
+      "Bash(python3 /tmp/get-pip.py --user)",
+      "Bash(python3 /tmp/get-pip.py --user --break-system-packages)",
+      "Bash(/home/linh/.local/bin/pip install:*)",
+      "Bash(python3:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(pytest:*)",
+      "Bash(python:*)",
+      "Bash(git init:*)",
+      "Bash(git -C /home/linh/Documents/TLF_shell_generator-main/backend config user.email \"linh@tlf-shell-generator\")",
+      "Bash(git -C /home/linh/Documents/TLF_shell_generator-main/backend config user.name \"Linh Dinh\")",
+      "Bash(git -C /home/linh/Documents/TLF_shell_generator-main/backend add requirements.txt pytest.ini tests/conftest.py)",
+      "Bash(git -C:*)"
+    ]
+  }
+}

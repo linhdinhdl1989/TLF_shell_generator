@@ -592,6 +592,7 @@ export default function TLFListTab({ studyId }) {
 
       {/* ── Stats strip ───────────────────────────────────────────────────── */}
       {total > 0 && (
+<<<<<<< HEAD
         <div className="space-y-1.5">
           {/* Progress bar */}
           <div className="flex items-center gap-3">
@@ -615,6 +616,13 @@ export default function TLFListTab({ studyId }) {
               <span className="text-gray-400">— showing <span className="font-medium text-gray-600">{filteredItems.length}</span> of {total}</span>
             )}
           </div>
+=======
+        <div className="flex items-center gap-4 text-sm text-gray-600">
+          <span><span className="font-medium text-gray-900">{total}</span> entries</span>
+          <span><span className="font-medium text-green-700">{approvedCount}</span> approved</span>
+          <span><span className="font-medium text-yellow-700">{total - approvedCount}</span> pending</span>
+          {selected.size > 0 && <span><span className="font-medium text-blue-700">{selected.size}</span> selected</span>}
+>>>>>>> 8da91eeb48d6cf8278c971c6314d3ed004dd3e8b
         </div>
       )}
 

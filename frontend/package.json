@@ -11,6 +11,7 @@
   "dependencies": {
     "lucide-react": "^0.441.0",
     "react": "^18.3.1",
+<<<<<<< HEAD
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.13.2"
   },
@@ -20,5 +21,15 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "vite": "^8.0.2"
+=======
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "vite": "^5.4.8"
+>>>>>>> 8da91eeb48d6cf8278c971c6314d3ed004dd3e8b
   }
 }
